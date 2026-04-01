@@ -25,6 +25,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 # Font metrics (parley)
 parley = "0.8"
+fontique = { version = "0.8", features = ["fontconfig-dlopen"] }
 
 # Rendering
 tiny-skia = "0.11"
