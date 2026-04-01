@@ -1,0 +1,19 @@
+[package]
+name = "jgd-server"
+description = "Transport layer (Unix/NamedPipe/TCP), Hub, session management, and discovery for jgd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jgd-protocol = { workspace = true }
+jgd-font-metrics = { workspace = true }
+jgd-render = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

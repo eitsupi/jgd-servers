@@ -1,0 +1,15 @@
+[package]
+name = "jgd-render"
+description = "Renderer trait and backends (SVG, tiny-skia PNG) for jgd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jgd-protocol = { workspace = true }
+tiny-skia = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

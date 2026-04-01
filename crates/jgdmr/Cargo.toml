@@ -1,0 +1,18 @@
+[package]
+name = "jgdmr"
+description = "CLI binary for jgd: http, tui, and headless subcommands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jgd-protocol = { workspace = true }
+jgd-font-metrics = { workspace = true }
+jgd-render = { workspace = true }
+jgd-server = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

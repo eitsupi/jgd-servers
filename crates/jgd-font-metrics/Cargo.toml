@@ -1,0 +1,12 @@
+[package]
+name = "jgd-font-metrics"
+description = "Server-side font metrics via parley for jgd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jgd-protocol = { workspace = true }
+parley = { workspace = true }
+thiserror = { workspace = true }
