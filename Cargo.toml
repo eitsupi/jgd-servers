@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 tokio-util = { version = "0.7", features = ["codec"] }
 
 # Font metrics (parley)
-parley = "0.4"
+parley = "0.8"
 
 # Rendering
 tiny-skia = "0.11"
