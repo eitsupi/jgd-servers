@@ -112,9 +112,17 @@ impl Listener {
     pub fn bind_unix(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
-        // Remove stale socket if it exists.
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        // Remove stale socket if it exists, but only if it is actually a socket.
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            use std::os::unix::fs::FileTypeExt as _;
+            if meta.file_type().is_socket() {
+                std::fs::remove_file(&path)?;
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!("path exists but is not a socket: {}", path.display()),
+                ));
+            }
         }
 
         let inner = tokio::net::UnixListener::bind(&path)?;

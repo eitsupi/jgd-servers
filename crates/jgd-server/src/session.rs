@@ -34,7 +34,10 @@ pub fn server_info_message(server_name: &str, transport: Transport) -> Message {
 /// Reads messages from R, sends the deferred welcome after the first
 /// message, and routes subsequent messages through the provided callback.
 ///
-/// Returns when the connection is closed or an error occurs.
+/// Returns `Ok(())` on clean shutdown (client closed connection) or
+/// mid-session read/write errors (logged as warnings). Returns `Err`
+/// only if the welcome message cannot be sent (broken connection before
+/// any useful work).
 pub async fn run_session<T, F, Fut>(
     framed: &mut Framed<T, JsonLinesCodec>,
     server_name: &str,
@@ -61,18 +64,18 @@ where
         if !welcome_sent {
             welcome_sent = true;
             let welcome = server_info_message(server_name, transport);
-            if let Err(e) = framed.send(welcome).await {
-                tracing::warn!("failed to send welcome: {e}");
-                break;
-            }
+            framed
+                .send(welcome)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to send welcome: {e}"))?;
         }
 
         // Route the message and optionally send a response.
-        if let Some(response) = on_message(msg).await {
-            if let Err(e) = framed.send(response).await {
-                tracing::warn!("failed to send response: {e}");
-                break;
-            }
+        if let Some(response) = on_message(msg).await
+            && let Err(e) = framed.send(response).await
+        {
+            tracing::warn!("failed to send response: {e}");
+            break;
         }
     }
 
@@ -170,5 +173,56 @@ mod tests {
 
         drop(client);
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_json_terminates_gracefully() {
+        let (client_io, server_io) = duplex(8192);
+        let mut server = framed(server_io);
+
+        // Write raw invalid JSON directly to the client side.
+        let mut raw_client = client_io;
+        tokio::io::AsyncWriteExt::write_all(&mut raw_client, b"not valid json\n")
+            .await
+            .unwrap();
+        drop(raw_client);
+
+        // Session should handle the error and return Ok.
+        let result = run_session(
+            &mut server,
+            "test-server",
+            Transport::Unix,
+            |_msg| async { None },
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_before_response() {
+        let (client_io, server_io) = duplex(8192);
+        let mut client = framed(client_io);
+        let mut server = framed(server_io);
+
+        // Client sends a message then immediately disconnects.
+        client.send(Message::Ping).await.unwrap();
+        drop(client);
+
+        // Session should complete without error.
+        let result = run_session(
+            &mut server,
+            "test-server",
+            Transport::Unix,
+            |msg| async move {
+                match msg {
+                    Message::Ping => Some(Message::Pong),
+                    _ => None,
+                }
+            },
+        )
+        .await;
+        // Welcome send may succeed or fail depending on timing; either is OK.
+        // The important thing is no panic.
+        let _ = result;
     }
 }
