@@ -6,14 +6,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+tcp = []
+
 [dependencies]
 jgd-protocol = { workspace = true }
 jgd-font-metrics = { workspace = true }
-jgd-render = { workspace = true }
+futures-util = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
