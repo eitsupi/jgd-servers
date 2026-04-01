@@ -10,4 +10,3 @@ repository.workspace = true
 jgd-protocol = { workspace = true }
 parley = { workspace = true }
 fontique = { workspace = true }
-thiserror = { workspace = true }

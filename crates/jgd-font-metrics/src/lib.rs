@@ -13,12 +13,13 @@ use parley::{
     StyleProperty,
 };
 
-/// Global font context shared across all metrics computations.
+/// Shared font and layout contexts for metrics computations.
 ///
-/// `FontContext` caches font discovery and parsed font data, so sharing
-/// a single instance avoids redundant filesystem scans.
-static FONT_CTX: LazyLock<Mutex<FontContext>> =
-    LazyLock::new(|| Mutex::new(FontContext::new()));
+/// `FontContext` caches font discovery and parsed font data.
+/// `LayoutContext` caches shaping/layout data across calls.
+/// Bundled together under a single mutex to preserve caching benefits.
+static CTX: LazyLock<Mutex<(FontContext, LayoutContext<[u8; 4]>)>> =
+    LazyLock::new(|| Mutex::new((FontContext::new(), LayoutContext::new())));
 
 /// Compute font metrics for a [`MetricsRequest`] and return a [`MetricsResponse`].
 pub fn compute_metrics(req: &MetricsRequest) -> MetricsResponse {
@@ -94,13 +95,13 @@ fn char_metric(c: char, font: &ProtocolFontContext) -> TextMetric {
 
 /// Build a parley layout for the given text and font parameters.
 fn build_layout(text: &str, font: &ProtocolFontContext) -> parley::Layout<[u8; 4]> {
-    let mut font_ctx = FONT_CTX.lock().unwrap();
-    let mut layout_ctx: LayoutContext<[u8; 4]> = LayoutContext::new();
+    let mut ctx = CTX.lock().unwrap();
+    let (ref mut font_ctx, ref mut layout_ctx) = *ctx;
     let (weight, style) = fontface_to_weight_and_style(font.face);
 
     let family = map_font_family(&font.family);
 
-    let mut builder = layout_ctx.ranged_builder(&mut font_ctx, text, 1.0, false);
+    let mut builder = layout_ctx.ranged_builder(font_ctx, text, 1.0, false);
     builder.push_default(StyleProperty::FontSize(font.size as f32));
     builder.push_default(LineHeight::FontSizeRelative(font.lineheight as f32));
     builder.push_default(family);
@@ -116,12 +117,19 @@ fn build_layout(text: &str, font: &ProtocolFontContext) -> parley::Layout<[u8; 4
 
 /// Map R font family names to parley `FontFamily`.
 fn map_font_family(family: &str) -> FontFamily<'_> {
-    match family.to_lowercase().as_str() {
-        "" | "sans" | "sans-serif" => GenericFamily::SansSerif.into(),
-        "serif" => GenericFamily::Serif.into(),
-        "mono" | "monospace" => GenericFamily::Monospace.into(),
-        "symbol" => GenericFamily::Fantasy.into(),
-        _ => FontFamily::named(family),
+    if family.is_empty()
+        || family.eq_ignore_ascii_case("sans")
+        || family.eq_ignore_ascii_case("sans-serif")
+    {
+        GenericFamily::SansSerif.into()
+    } else if family.eq_ignore_ascii_case("serif") {
+        GenericFamily::Serif.into()
+    } else if family.eq_ignore_ascii_case("mono") || family.eq_ignore_ascii_case("monospace") {
+        GenericFamily::Monospace.into()
+    } else if family.eq_ignore_ascii_case("symbol") {
+        GenericFamily::Fantasy.into()
+    } else {
+        FontFamily::named(family)
     }
 }
 
