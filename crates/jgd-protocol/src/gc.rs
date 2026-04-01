@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Graphics context controlling style for drawing operations.
 ///
 /// Mirrors the R graphics context (pGEcontext) serialized by the C device.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GraphicsContext {
     /// Stroke color as `"rgba(R,G,B,A)"` or `null` if transparent.
     #[serde(default)]
@@ -61,18 +61,20 @@ fn default_ljoin() -> LineJoin {
 }
 
 /// Line end cap style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LineCap {
+    #[default]
     Round,
     Butt,
     Square,
 }
 
 /// Line join style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LineJoin {
+    #[default]
     Round,
     Miter,
     Bevel,

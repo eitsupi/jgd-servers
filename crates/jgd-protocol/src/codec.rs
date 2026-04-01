@@ -71,8 +71,10 @@ impl Decoder for JsonLinesCodec {
             }
             None => {
                 if src.len() > self.max_line_length {
+                    let len = src.len();
+                    src.clear();
                     return Err(CodecError::LineTooLong {
-                        len: src.len(),
+                        len,
                         max: self.max_line_length,
                     });
                 }
@@ -92,14 +94,4 @@ impl Encoder<Message> for JsonLinesCodec {
         dst.put_u8(b'\n');
         Ok(())
     }
-}
-
-/// Encode a message to a JSON string (without trailing newline).
-pub fn encode_message(msg: &Message) -> Result<String, serde_json::Error> {
-    serde_json::to_string(msg)
-}
-
-/// Decode a message from a JSON string.
-pub fn decode_message(json: &str) -> Result<Message, serde_json::Error> {
-    serde_json::from_str(json)
 }
