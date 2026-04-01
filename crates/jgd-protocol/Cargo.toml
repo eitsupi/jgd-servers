@@ -1,6 +1,6 @@
 [package]
 name = "jgd-protocol"
-description = "Protocol types, serde definitions, and NDJSON codec for jgd"
+description = "Protocol types, serde definitions, and JSONL codec for jgd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
