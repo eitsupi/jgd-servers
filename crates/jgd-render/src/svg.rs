@@ -23,7 +23,8 @@ impl Renderer for SvgRenderer {
         let mut defs = String::new();
         let mut body = String::new();
         let mut clip_id: usize = 0;
-        let mut clip_open = false;
+        // Track nesting so that clip <g> and group <g> don't interfere.
+        let mut nesting: Vec<NestingKind> = Vec::new();
 
         // Background.
         if let Some(bg) = &plot.device.bg {
@@ -37,9 +38,10 @@ impl Renderer for SvgRenderer {
         for op in &plot.ops {
             match op {
                 DrawingOp::Clip { x0, y0, x1, y1 } => {
-                    if clip_open {
-                        body.push_str("  </g>\n");
-                    }
+                    // Close only the innermost clip group (skip over any
+                    // intervening user groups so they remain correctly nested).
+                    close_innermost_clip(&mut body, &mut nesting)?;
+
                     let cid = clip_id;
                     clip_id += 1;
                     let cx = x0.min(*x1);
@@ -52,7 +54,7 @@ impl Renderer for SvgRenderer {
                          width=\"{cw}\" height=\"{ch}\"/></clipPath>",
                     )?;
                     writeln!(body, "  <g clip-path=\"url(#clip-{cid})\">")?;
-                    clip_open = true;
+                    nesting.push(NestingKind::Clip);
                 }
 
                 DrawingOp::Line { x1, y1, x2, y2, gc } => {
@@ -200,18 +202,22 @@ impl Renderer for SvgRenderer {
                     )?;
                 }
 
+                // Intentionally ignores BeginGroup.ext — no SVG mapping yet.
                 DrawingOp::BeginGroup { .. } => {
                     body.push_str("    <g>\n");
+                    nesting.push(NestingKind::Group);
                 }
                 DrawingOp::EndGroup => {
+                    if let Some(NestingKind::Group) = nesting.last() {
+                        nesting.pop();
+                    }
                     body.push_str("    </g>\n");
                 }
             }
         }
 
-        if clip_open {
-            body.push_str("  </g>\n");
-        }
+        // Close any remaining clip group.
+        close_innermost_clip(&mut body, &mut nesting)?;
 
         // Assemble final SVG document.
         let mut svg = String::new();
@@ -231,9 +237,47 @@ impl Renderer for SvgRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// Nesting
+// ---------------------------------------------------------------------------
+
+/// Tracks whether an open `<g>` belongs to a clip region or a user group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NestingKind {
+    Clip,
+    Group,
+}
+
+/// Close the innermost clip `<g>`, temporarily re-closing and re-opening
+/// any intervening user groups so the SVG nesting stays valid.
+fn close_innermost_clip(body: &mut String, nesting: &mut Vec<NestingKind>) -> std::fmt::Result {
+    // Find the innermost Clip.
+    let clip_pos = nesting.iter().rposition(|k| *k == NestingKind::Clip);
+    let Some(pos) = clip_pos else {
+        return Ok(());
+    };
+
+    // Close everything from the top down to (and including) the clip.
+    let groups_above = nesting.len() - pos - 1;
+    for _ in 0..groups_above {
+        body.push_str("    </g>\n"); // close intervening group
+    }
+    body.push_str("  </g>\n"); // close clip
+
+    // Remove the clip entry; keep the group entries so they get re-opened.
+    nesting.remove(pos);
+
+    // Re-open the intervening groups.
+    for _ in 0..groups_above {
+        body.push_str("    <g>\n");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Intentionally ignores gc.ext — no SVG mapping for extension fields yet.
 fn write_stroke_attrs(buf: &mut String, gc: &GraphicsContext) -> std::fmt::Result {
     match &gc.col {
         Some(c) => write!(buf, " stroke=\"{}\"", xml_escape(c))?,
@@ -279,6 +323,7 @@ fn write_fill_attr(buf: &mut String, gc: &GraphicsContext) -> std::fmt::Result {
 }
 
 fn write_font_attrs(buf: &mut String, font: &FontContext) -> std::fmt::Result {
+    // Intentionally ignores font.lineheight — no direct SVG text mapping.
     if !font.family.is_empty() {
         write!(buf, " font-family=\"{}\"", xml_escape(&font.family))?;
     }
@@ -513,6 +558,101 @@ mod tests {
         let svg = SvgRenderer.render(&plot).unwrap();
         assert!(svg.contains("fill-rule=\"evenodd\""));
         assert!(svg.contains("d=\"M0 0 L100 0 L100 100 Z\""));
+    }
+
+    #[test]
+    fn polyline_op() {
+        let plot = Plot {
+            session_id: None,
+            ops: vec![DrawingOp::Polyline {
+                x: vec![10.0, 20.0, 30.0],
+                y: vec![40.0, 50.0, 60.0],
+                gc: simple_gc(),
+            }],
+            device: device(100.0, 100.0),
+        };
+        let svg = SvgRenderer.render(&plot).unwrap();
+        assert!(svg.contains("<polyline points=\"10,40 20,50 30,60\""));
+        assert!(svg.contains("fill=\"none\""));
+    }
+
+    #[test]
+    fn raster_op() {
+        let plot = Plot {
+            session_id: None,
+            ops: vec![DrawingOp::Raster {
+                x: 10.0,
+                y: 20.0,
+                w: 64.0,
+                h: 48.0,
+                rot: 45.0,
+                interpolate: false,
+                pw: 64,
+                ph: 48,
+                data: "AAAA".into(),
+            }],
+            device: device(200.0, 200.0),
+        };
+        let svg = SvgRenderer.render(&plot).unwrap();
+        assert!(svg.contains("x=\"10\" y=\"20\" width=\"64\" height=\"48\""));
+        assert!(svg.contains("transform=\"rotate(-45,10,20)\""));
+        assert!(svg.contains("image-rendering=\"optimizeSpeed\""));
+        assert!(svg.contains("href=\"data:image/png;base64,AAAA\""));
+    }
+
+    #[test]
+    fn stroke_dasharray() {
+        let gc = GraphicsContext {
+            col: Some("rgba(0,0,0,1)".into()),
+            lty: vec![4.0, 2.0],
+            ..Default::default()
+        };
+        let plot = Plot {
+            session_id: None,
+            ops: vec![DrawingOp::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 100.0,
+                y2: 0.0,
+                gc,
+            }],
+            device: device(100.0, 100.0),
+        };
+        let svg = SvgRenderer.render(&plot).unwrap();
+        assert!(svg.contains("stroke-dasharray=\"4,2\""));
+    }
+
+    #[test]
+    fn clip_and_group_interleave() {
+        // BeginGroup → Clip → EndGroup must produce valid nesting.
+        let plot = Plot {
+            session_id: None,
+            ops: vec![
+                DrawingOp::BeginGroup { ext: None },
+                DrawingOp::Clip {
+                    x0: 0.0,
+                    y0: 0.0,
+                    x1: 50.0,
+                    y1: 50.0,
+                },
+                DrawingOp::Line {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 50.0,
+                    y2: 50.0,
+                    gc: simple_gc(),
+                },
+                DrawingOp::EndGroup,
+            ],
+            device: device(100.0, 100.0),
+        };
+        let svg = SvgRenderer.render(&plot).unwrap();
+        // Must contain clip infrastructure.
+        assert!(svg.contains("<clipPath id=\"clip-0\">"));
+        // The SVG must be well-formed: count <g> and </g> must match.
+        let opens = svg.matches("<g").count();
+        let closes = svg.matches("</g>").count();
+        assert_eq!(opens, closes, "mismatched <g>/</g>: {svg}");
     }
 
     #[test]
