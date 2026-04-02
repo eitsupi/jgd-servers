@@ -19,6 +19,10 @@ enum Command {
         #[arg(long, default_value = "/tmp/jgd.sock")]
         socket: PathBuf,
 
+        /// HTTP host address to bind to.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
         /// HTTP port for browser/API access.
         #[arg(long, default_value_t = 3000)]
         port: u16,
@@ -43,13 +47,14 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Http {
             socket,
+            host,
             port,
             headless,
-        } => run_http(socket, port, headless).await,
+        } => run_http(socket, &host, port, headless).await,
     }
 }
 
-async fn run_http(socket: PathBuf, port: u16, headless: bool) -> Result<()> {
+async fn run_http(socket: PathBuf, host: &str, port: u16, headless: bool) -> Result<()> {
     let hub = jgd_server::hub::spawn();
 
     // Start R connection listener.
@@ -84,7 +89,7 @@ async fn run_http(socket: PathBuf, port: u16, headless: bool) -> Result<()> {
         jgd_server::api::full_router(hub_clone)
     };
 
-    let addr = format!("0.0.0.0:{port}");
+    let addr = format!("{host}:{port}");
     let tcp_listener = TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "HTTP server listening");
 
