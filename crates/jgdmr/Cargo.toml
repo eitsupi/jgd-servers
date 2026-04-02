@@ -11,6 +11,7 @@ jgd-protocol = { workspace = true }
 jgd-font-metrics = { workspace = true }
 jgd-render = { workspace = true }
 jgd-server = { workspace = true }
+axum = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

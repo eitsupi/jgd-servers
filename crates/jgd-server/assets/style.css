@@ -1,0 +1,10 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1e1e1e; color: #ccc; font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+#toolbar { background: #252526; padding: 4px 8px; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+#toolbar button, #toolbar select { background: #333; color: #ccc; border: 1px solid #555; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
+#toolbar button:hover, #toolbar select:hover { background: #45494e; }
+#toolbar button:disabled { opacity: 0.4; cursor: default; }
+#ws-status { width: 8px; height: 8px; border-radius: 50%; background: #f44747; }
+#ws-status.connected { background: #4ec9b0; }
+#plot-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+#plot-container img { max-width: 100%; max-height: 100%; }

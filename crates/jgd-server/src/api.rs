@@ -19,13 +19,21 @@ pub struct RenderParams {
     pub height: Option<f64>,
 }
 
-/// Build the REST API router.
+/// Build the REST API router (headless mode).
 pub fn router(hub: HubHandle) -> Router {
     Router::new()
         .route("/plots", get(list_plots))
         .route("/plots/{id}/svg", get(render_svg))
         .route("/plots/{id}/png", get(render_png))
         .with_state(hub)
+}
+
+/// Build the full router: REST API + WebSocket + static file serving.
+pub fn full_router(hub: HubHandle) -> Router {
+    router(hub.clone())
+        .merge(crate::ws::router(hub))
+        .merge(crate::web_assets::router())
+        .fallback(crate::web_assets::fallback)
 }
 
 async fn list_plots(State(hub): State<HubHandle>) -> impl IntoResponse {
@@ -45,13 +53,15 @@ async fn render_svg(
     Query(params): Query<RenderParams>,
 ) -> Response {
     if let Some(w) = params.width
-        && !validate_dimension(w) {
-            return (StatusCode::BAD_REQUEST, "invalid width").into_response();
-        }
+        && !validate_dimension(w)
+    {
+        return (StatusCode::BAD_REQUEST, "invalid width").into_response();
+    }
     if let Some(h) = params.height
-        && !validate_dimension(h) {
-            return (StatusCode::BAD_REQUEST, "invalid height").into_response();
-        }
+        && !validate_dimension(h)
+    {
+        return (StatusCode::BAD_REQUEST, "invalid height").into_response();
+    }
 
     let Some(mut plot) = hub.get_plot(&id).await else {
         return (StatusCode::NOT_FOUND, "plot not found").into_response();

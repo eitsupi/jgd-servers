@@ -34,7 +34,7 @@ tiny-skia = "0.12"
 clap = { version = "4.6", features = ["derive"] }
 
 # HTTP / WebSocket
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.29"
 
 # Terminal UI
