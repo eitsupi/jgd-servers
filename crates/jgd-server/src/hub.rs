@@ -237,6 +237,7 @@ impl HubState {
 
         if let Some(id) = session.session_id {
             self.session_id_to_conn.remove(&id);
+            self.plots.remove(&id);
             self.retired_session_ids.insert(id);
 
             // Cap retired set to prevent unbounded growth.  Evict an

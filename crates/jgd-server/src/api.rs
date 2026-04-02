@@ -33,11 +33,26 @@ async fn list_plots(State(hub): State<HubHandle>) -> impl IntoResponse {
     axum::Json(plots)
 }
 
+const MAX_DIMENSION: f64 = 10000.0;
+
+fn validate_dimension(v: f64) -> bool {
+    v.is_finite() && v > 0.0 && v <= MAX_DIMENSION
+}
+
 async fn render_svg(
     State(hub): State<HubHandle>,
     Path(id): Path<String>,
     Query(params): Query<RenderParams>,
 ) -> Response {
+    if let Some(w) = params.width
+        && !validate_dimension(w) {
+            return (StatusCode::BAD_REQUEST, "invalid width").into_response();
+        }
+    if let Some(h) = params.height
+        && !validate_dimension(h) {
+            return (StatusCode::BAD_REQUEST, "invalid height").into_response();
+        }
+
     let Some(mut plot) = hub.get_plot(&id).await else {
         return (StatusCode::NOT_FOUND, "plot not found").into_response();
     };
@@ -51,11 +66,10 @@ async fn render_svg(
 
     match SvgRenderer.render(&plot) {
         Ok(svg) => ([(CONTENT_TYPE, "image/svg+xml")], svg).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("render error: {e}"),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("SVG render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal render error").into_response()
+        }
     }
 }
 
@@ -123,8 +137,8 @@ mod tests {
     async fn inject_frame(hub: &HubHandle, session_id: &str) {
         let (conn_id, _rx) = hub.register_session();
         hub.r_message(conn_id, make_frame(session_id));
-        // Give the Hub actor a chance to process.
-        tokio::task::yield_now().await;
+        // Await a query to guarantee the Hub has processed the frame.
+        let _ = hub.get_plots().await;
     }
 
     #[tokio::test]
@@ -202,5 +216,25 @@ mod tests {
         let hub = hub::spawn();
         let resp = get(router(hub), "/plots/any/png").await;
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn render_svg_rejects_invalid_dimensions() {
+        let hub = hub::spawn();
+        inject_frame(&hub, "s1").await;
+        let app = router(hub);
+
+        for uri in [
+            "/plots/s1/svg?width=-1",
+            "/plots/s1/svg?height=0",
+            "/plots/s1/svg?width=99999",
+        ] {
+            let resp = get(app.clone(), uri).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "expected 400 for {uri}"
+            );
+        }
     }
 }
