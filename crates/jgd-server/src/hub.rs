@@ -185,12 +185,12 @@ impl HubState {
             self.session_id_to_conn.remove(&id);
             self.retired_session_ids.insert(id);
 
-            // Cap retired set to prevent unbounded growth.  We keep the
-            // most recent half rather than clearing entirely so that
-            // recently-retired IDs are still detected on reuse.  IDs
-            // evicted here *could* collide undetected, but this is
-            // acceptable: the window is narrow and the consequence is
-            // only a cosmetic session-ID overlap on the browser side.
+            // Cap retired set to prevent unbounded growth.  Evict an
+            // arbitrary half (HashSet has no defined order) rather than
+            // clearing entirely.  Some recently-retired IDs may be
+            // evicted, but the window for missed reuse detection is
+            // narrow and the consequence is only a cosmetic session-ID
+            // overlap on the browser side.
             if self.retired_session_ids.len() > 1000 {
                 let retain_count = self.retired_session_ids.len() / 2;
                 let to_remove: Vec<_> = self
