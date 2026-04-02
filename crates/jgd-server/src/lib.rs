@@ -1,5 +1,6 @@
-//! Transport layer, Hub, session management, and discovery for jgd.
+//! Transport layer, Hub, session management, discovery, and REST API for jgd.
 
+pub mod api;
 pub mod discovery;
 pub mod hub;
 pub mod listener;

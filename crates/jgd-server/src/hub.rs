@@ -14,14 +14,25 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::sync::{broadcast, mpsc};
+use serde::Serialize;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
+use jgd_protocol::Plot;
 use jgd_protocol::message::{FrameMessage, Message, ResizeMessage};
 
 /// Connection-scoped numeric identifier for an R session.
 pub type ConnId = u64;
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Summary of a stored plot, returned by the REST API.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlotSummary {
+    pub session_id: String,
+    pub width: f64,
+    pub height: f64,
+    pub op_count: usize,
+}
 
 /// Clonable handle for communicating with the Hub actor.
 #[derive(Clone)]
@@ -63,6 +74,23 @@ impl HubHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<Message> {
         self.broadcast_tx.subscribe()
     }
+
+    /// List all stored plots with metadata.
+    pub async fn get_plots(&self) -> Vec<PlotSummary> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(HubCommand::GetPlots { reply: tx });
+        rx.await.unwrap_or_default()
+    }
+
+    /// Get a stored plot by session ID.
+    pub async fn get_plot(&self, session_id: &str) -> Option<Plot> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(HubCommand::GetPlot {
+            session_id: session_id.to_owned(),
+            reply: tx,
+        });
+        rx.await.ok().flatten()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +110,13 @@ enum HubCommand {
         msg: Message,
     },
     ClientResize(ResizeMessage),
+    GetPlots {
+        reply: oneshot::Sender<Vec<PlotSummary>>,
+    },
+    GetPlot {
+        session_id: String,
+        reply: oneshot::Sender<Option<Plot>>,
+    },
 }
 
 struct SessionState {
@@ -99,6 +134,8 @@ struct HubState {
     retired_session_ids: HashSet<String>,
     session_reuse_counter: u64,
     broadcast_tx: broadcast::Sender<Message>,
+    /// Latest plot per session, keyed by session_id.
+    plots: HashMap<String, Plot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +172,7 @@ async fn run(
         retired_session_ids: HashSet::new(),
         session_reuse_counter: 0,
         broadcast_tx,
+        plots: HashMap::new(),
     };
 
     while let Some(cmd) = cmd_rx.recv().await {
@@ -161,6 +199,22 @@ async fn run(
             }
             HubCommand::ClientResize(msg) => {
                 state.handle_client_resize(msg);
+            }
+            HubCommand::GetPlots { reply } => {
+                let summaries = state
+                    .plots
+                    .iter()
+                    .map(|(sid, plot)| PlotSummary {
+                        session_id: sid.clone(),
+                        width: plot.device.width,
+                        height: plot.device.height,
+                        op_count: plot.ops.len(),
+                    })
+                    .collect();
+                let _ = reply.send(summaries);
+            }
+            HubCommand::GetPlot { session_id, reply } => {
+                let _ = reply.send(state.plots.get(&session_id).cloned());
             }
         }
     }
@@ -275,6 +329,11 @@ impl HubState {
             && (session.remapped || frame.plot.session_id.is_none())
         {
             frame.plot.session_id = Some(session_id.clone());
+        }
+
+        // Store the latest plot for REST API access.
+        if let Some(ref sid) = frame.plot.session_id {
+            self.plots.insert(sid.clone(), frame.plot.clone());
         }
 
         let _ = self.broadcast_tx.send(Message::Frame(frame));

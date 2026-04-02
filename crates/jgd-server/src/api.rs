@@ -1,0 +1,206 @@
+//! REST API for plot listing and server-side rendering.
+
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use serde::Deserialize;
+
+use jgd_render::{Renderer, SvgRenderer};
+
+use crate::hub::HubHandle;
+
+/// Query parameters for render endpoints.
+#[derive(Debug, Deserialize)]
+pub struct RenderParams {
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+}
+
+/// Build the REST API router.
+pub fn router(hub: HubHandle) -> Router {
+    Router::new()
+        .route("/plots", get(list_plots))
+        .route("/plots/{id}/svg", get(render_svg))
+        .route("/plots/{id}/png", get(render_png))
+        .with_state(hub)
+}
+
+async fn list_plots(State(hub): State<HubHandle>) -> impl IntoResponse {
+    let plots = hub.get_plots().await;
+    axum::Json(plots)
+}
+
+async fn render_svg(
+    State(hub): State<HubHandle>,
+    Path(id): Path<String>,
+    Query(params): Query<RenderParams>,
+) -> Response {
+    let Some(mut plot) = hub.get_plot(&id).await else {
+        return (StatusCode::NOT_FOUND, "plot not found").into_response();
+    };
+
+    if let Some(w) = params.width {
+        plot.device.width = w;
+    }
+    if let Some(h) = params.height {
+        plot.device.height = h;
+    }
+
+    match SvgRenderer.render(&plot) {
+        Ok(svg) => ([(CONTENT_TYPE, "image/svg+xml")], svg).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("render error: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn render_png(
+    Path(_id): Path<String>,
+    Query(_params): Query<RenderParams>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "PNG rendering not yet implemented",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::http::Response;
+    use tower::ServiceExt;
+
+    use jgd_protocol::message::{DeviceInfo, FrameMessage, Message};
+    use jgd_protocol::{DrawingOp, GraphicsContext, Plot};
+
+    async fn get(app: Router, uri: &str) -> Response<Body> {
+        app.into_service()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    use crate::hub;
+
+    fn make_frame(session_id: &str) -> Message {
+        Message::Frame(FrameMessage {
+            plot: Plot {
+                session_id: Some(session_id.into()),
+                ops: vec![DrawingOp::Line {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 100.0,
+                    y2: 100.0,
+                    gc: GraphicsContext {
+                        col: Some("rgba(0,0,0,1)".into()),
+                        ..Default::default()
+                    },
+                }],
+                device: DeviceInfo {
+                    width: 800.0,
+                    height: 600.0,
+                    dpi: None,
+                    bg: Some("white".into()),
+                },
+            },
+            incremental: false,
+            new_page: None,
+            resize_replay: None,
+            plot_index: None,
+            plot_number: None,
+            ext: None,
+        })
+    }
+
+    /// Inject a frame into the Hub via an R session.
+    async fn inject_frame(hub: &HubHandle, session_id: &str) {
+        let (conn_id, _rx) = hub.register_session();
+        hub.r_message(conn_id, make_frame(session_id));
+        // Give the Hub actor a chance to process.
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn list_plots_empty() {
+        let hub = hub::spawn();
+        let resp = get(router(hub), "/plots").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let plots: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(plots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_plots_after_frame() {
+        let hub = hub::spawn();
+        inject_frame(&hub, "test-session").await;
+
+        let resp = get(router(hub), "/plots").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let plots: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(plots.len(), 1);
+        assert_eq!(plots[0]["session_id"], "test-session");
+        assert_eq!(plots[0]["op_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn render_svg_returns_svg() {
+        let hub = hub::spawn();
+        inject_frame(&hub, "s1").await;
+
+        let resp = get(router(hub), "/plots/s1/svg").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(CONTENT_TYPE).unwrap(), "image/svg+xml");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let svg = std::str::from_utf8(&body).unwrap();
+        assert!(svg.starts_with("<svg xmlns="));
+        assert!(svg.contains("width=\"800\""));
+    }
+
+    #[tokio::test]
+    async fn render_svg_with_custom_size() {
+        let hub = hub::spawn();
+        inject_frame(&hub, "s1").await;
+
+        let resp = get(router(hub), "/plots/s1/svg?width=400&height=300").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let svg = std::str::from_utf8(&body).unwrap();
+        assert!(svg.contains("width=\"400\""));
+        assert!(svg.contains("height=\"300\""));
+    }
+
+    #[tokio::test]
+    async fn render_svg_not_found() {
+        let hub = hub::spawn();
+        let resp = get(router(hub), "/plots/nonexistent/svg").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn render_png_not_implemented() {
+        let hub = hub::spawn();
+        let resp = get(router(hub), "/plots/any/png").await;
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+}
