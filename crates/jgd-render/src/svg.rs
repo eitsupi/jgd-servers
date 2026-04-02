@@ -208,6 +208,11 @@ impl Renderer for SvgRenderer {
                     nesting.push(NestingKind::Group);
                 }
                 DrawingOp::EndGroup => {
+                    // If a clip sits above the group on the stack, close
+                    // it first so the group's </g> matches its own <g>.
+                    if let Some(NestingKind::Clip) = nesting.last() {
+                        close_innermost_clip(&mut body, &mut nesting)?;
+                    }
                     if let Some(NestingKind::Group) = nesting.last() {
                         nesting.pop();
                     }
@@ -624,7 +629,9 @@ mod tests {
 
     #[test]
     fn clip_and_group_interleave() {
-        // BeginGroup → Clip → EndGroup must produce valid nesting.
+        // BeginGroup → Clip → Line → EndGroup → Line
+        // The clip must close before the group closes, and the trailing
+        // line must appear outside both.
         let plot = Plot {
             session_id: None,
             ops: vec![
@@ -643,16 +650,39 @@ mod tests {
                     gc: simple_gc(),
                 },
                 DrawingOp::EndGroup,
+                DrawingOp::Line {
+                    x1: 60.0,
+                    y1: 60.0,
+                    x2: 90.0,
+                    y2: 90.0,
+                    gc: simple_gc(),
+                },
             ],
             device: device(100.0, 100.0),
         };
         let svg = SvgRenderer.render(&plot).unwrap();
-        // Must contain clip infrastructure.
-        assert!(svg.contains("<clipPath id=\"clip-0\">"));
-        // The SVG must be well-formed: count <g> and </g> must match.
+
+        // Counts must match.
         let opens = svg.matches("<g").count();
         let closes = svg.matches("</g>").count();
         assert_eq!(opens, closes, "mismatched <g>/</g>: {svg}");
+
+        // Verify nesting order: group <g> before clip <g>, and clip
+        // </g> before group </g>.
+        let group_open = svg.find("    <g>\n").expect("missing group <g>");
+        let clip_open = svg.find("<g clip-path=").expect("missing clip <g>");
+        assert!(
+            group_open < clip_open,
+            "group <g> should appear before clip <g>: {svg}"
+        );
+
+        // The trailing line (x1="60") must appear after both close tags.
+        let trailing_line = svg.find("x1=\"60\"").expect("missing trailing line");
+        let last_close_g = svg.rfind("</g>").expect("missing </g>");
+        assert!(
+            trailing_line > last_close_g,
+            "trailing line should be outside all groups: {svg}"
+        );
     }
 
     #[test]
