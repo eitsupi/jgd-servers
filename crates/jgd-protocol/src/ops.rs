@@ -9,12 +9,7 @@ use crate::gc::GraphicsContext;
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum DrawingOp {
     /// Set clipping rectangle.
-    Clip {
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
-    },
+    Clip { x0: f64, y0: f64, x1: f64, y1: f64 },
 
     /// Single line segment.
     Line {

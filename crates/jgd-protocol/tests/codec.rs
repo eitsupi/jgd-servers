@@ -1,6 +1,6 @@
 use bytes::BytesMut;
-use jgd_protocol::*;
 use jgd_protocol::codec::JsonLinesCodec;
+use jgd_protocol::*;
 use tokio_util::codec::{Decoder, Encoder};
 
 #[test]

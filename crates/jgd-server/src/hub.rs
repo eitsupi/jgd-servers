@@ -38,7 +38,9 @@ impl HubHandle {
     pub fn register_session(&self) -> (ConnId, mpsc::UnboundedReceiver<Message>) {
         let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
-        let _ = self.cmd_tx.send(HubCommand::RegisterSession { conn_id, tx });
+        let _ = self
+            .cmd_tx
+            .send(HubCommand::RegisterSession { conn_id, tx });
         (conn_id, rx)
     }
 
@@ -183,9 +185,23 @@ impl HubState {
             self.session_id_to_conn.remove(&id);
             self.retired_session_ids.insert(id);
 
-            // Cap retired set to prevent unbounded growth.
+            // Cap retired set to prevent unbounded growth.  We keep the
+            // most recent half rather than clearing entirely so that
+            // recently-retired IDs are still detected on reuse.  IDs
+            // evicted here *could* collide undetected, but this is
+            // acceptable: the window is narrow and the consequence is
+            // only a cosmetic session-ID overlap on the browser side.
             if self.retired_session_ids.len() > 1000 {
-                self.retired_session_ids.clear();
+                let retain_count = self.retired_session_ids.len() / 2;
+                let to_remove: Vec<_> = self
+                    .retired_session_ids
+                    .iter()
+                    .skip(retain_count)
+                    .cloned()
+                    .collect();
+                for id in to_remove {
+                    self.retired_session_ids.remove(&id);
+                }
             }
         }
     }
@@ -416,7 +432,10 @@ mod tests {
             Message::Frame(f) => {
                 // Should be remapped with suffix.
                 let sid = f.plot.session_id.unwrap();
-                assert!(sid.starts_with("r-300-1:"), "expected remapped ID, got {sid}");
+                assert!(
+                    sid.starts_with("r-300-1:"),
+                    "expected remapped ID, got {sid}"
+                );
             }
             other => panic!("expected Frame, got {other:?}"),
         }
@@ -469,11 +488,7 @@ mod tests {
 
         hub.client_resize(resize.clone());
         // Second should be deduped — use a timeout to verify no message.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            rx.recv(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
         assert!(result.is_err(), "expected timeout (deduped), got message");
     }
 
@@ -503,12 +518,11 @@ mod tests {
             plot_index: None,
             session_id: None,
         });
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            rx.recv(),
-        )
-        .await;
-        assert!(msg.is_ok(), "expected resize to pass through after plotIndex");
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            msg.is_ok(),
+            "expected resize to pass through after plotIndex"
+        );
     }
 
     #[tokio::test]
@@ -541,11 +555,7 @@ mod tests {
         }
 
         // conn2 should NOT receive it.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            rx2.recv(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx2.recv()).await;
         assert!(result.is_err(), "conn2 should not receive plotIndex resize");
     }
 

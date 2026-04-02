@@ -85,8 +85,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jgd_protocol::message::{MetricsKind, MetricsRequest, MetricsResponse};
     use jgd_protocol::GraphicsContext;
+    use jgd_protocol::message::{MetricsKind, MetricsRequest, MetricsResponse};
     use tokio::io::duplex;
 
     #[tokio::test]
@@ -100,12 +100,17 @@ mod tests {
 
         // Server runs session in a task.
         let handle = tokio::spawn(async move {
-            run_session(&mut server, "test-server", Transport::Unix, |msg| async move {
-                match msg {
-                    Message::Ping => Some(Message::Pong),
-                    _ => None,
-                }
-            })
+            run_session(
+                &mut server,
+                "test-server",
+                Transport::Unix,
+                |msg| async move {
+                    match msg {
+                        Message::Ping => Some(Message::Pong),
+                        _ => None,
+                    }
+                },
+            )
             .await
             .unwrap();
         });
@@ -188,12 +193,9 @@ mod tests {
         drop(raw_client);
 
         // Session should handle the error and return Ok.
-        let result = run_session(
-            &mut server,
-            "test-server",
-            Transport::Unix,
-            |_msg| async { None },
-        )
+        let result = run_session(&mut server, "test-server", Transport::Unix, |_msg| async {
+            None
+        })
         .await;
         assert!(result.is_ok());
     }

@@ -35,10 +35,7 @@ pub fn compute_metrics(req: &MetricsRequest) -> MetricsResponse {
             }
         }
         MetricsKind::MetricInfo => {
-            let c = req
-                .c
-                .and_then(char::from_u32)
-                .unwrap_or('\0');
+            let c = req.c.and_then(char::from_u32).unwrap_or('\0');
             let metric = char_metric(c, &req.gc.font);
             MetricsResponse {
                 id: req.id,
@@ -155,9 +152,9 @@ fn fontface_to_weight_and_style(face: u8) -> (parley::FontWeight, parley::FontSt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jgd_protocol::GraphicsContext;
     use jgd_protocol::gc::FontContext as ProtocolFontContext;
     use jgd_protocol::message::{MetricsKind, MetricsRequest};
-    use jgd_protocol::GraphicsContext;
 
     fn make_gc() -> GraphicsContext {
         GraphicsContext {
@@ -182,7 +179,11 @@ mod tests {
         };
         let resp = compute_metrics(&req);
         assert_eq!(resp.id, 1);
-        assert!(resp.width > 0.0, "width should be positive, got {}", resp.width);
+        assert!(
+            resp.width > 0.0,
+            "width should be positive, got {}",
+            resp.width
+        );
     }
 
     #[test]
@@ -209,8 +210,16 @@ mod tests {
         };
         let resp = compute_metrics(&req);
         assert_eq!(resp.id, 3);
-        assert!(resp.ascent > 0.0, "ascent should be positive, got {}", resp.ascent);
-        assert!(resp.width > 0.0, "width should be positive, got {}", resp.width);
+        assert!(
+            resp.ascent > 0.0,
+            "ascent should be positive, got {}",
+            resp.ascent
+        );
+        assert!(
+            resp.width > 0.0,
+            "width should be positive, got {}",
+            resp.width
+        );
     }
 
     #[test]

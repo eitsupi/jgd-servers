@@ -83,7 +83,7 @@ async fn handle_connection(
                     None => break,
                 }
             }
-            Some(msg) = hub_rx.recv() => {
+            Some(msg) = hub_rx.recv(), if welcome_sent => {
                 if framed.send(msg).await.is_err() {
                     break;
                 }

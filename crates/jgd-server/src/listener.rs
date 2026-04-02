@@ -178,10 +178,8 @@ impl Listener {
 
                 // Hand off the connected instance and create a new one for
                 // the next client (following the arf pattern).
-                let connected = std::mem::replace(
-                    next_server,
-                    ServerOptions::new().create(pipe_name)?,
-                );
+                let connected =
+                    std::mem::replace(next_server, ServerOptions::new().create(pipe_name)?);
                 Ok(Connection::NamedPipe(connected))
             }
             #[cfg(feature = "tcp")]

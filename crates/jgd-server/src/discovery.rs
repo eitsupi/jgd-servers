@@ -62,14 +62,10 @@ pub fn write(path: &Path, info: &DiscoveryInfo) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let json = serde_json::to_string_pretty(info)
-        .map_err(io::Error::other)?;
+    let json = serde_json::to_string_pretty(info).map_err(io::Error::other)?;
 
     // Write to temp file in the same directory, then rename for atomicity.
-    let tmp_name = format!(
-        ".jgd-discovery-{}.tmp",
-        std::process::id()
-    );
+    let tmp_name = format!(".jgd-discovery-{}.tmp", std::process::id());
     let tmp_path = path.with_file_name(tmp_name);
 
     std::fs::write(&tmp_path, json.as_bytes())?;
@@ -87,8 +83,7 @@ pub fn write(path: &Path, info: &DiscoveryInfo) -> io::Result<()> {
 /// Read and parse a discovery file.
 pub fn read(path: &Path) -> io::Result<DiscoveryInfo> {
     let data = std::fs::read_to_string(path)?;
-    serde_json::from_str(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Remove the discovery file, but only if its PID matches the current process.
@@ -103,7 +98,10 @@ pub fn remove(path: &Path) -> io::Result<()> {
             Ok(())
         }
         Ok(_) => {
-            tracing::debug!(?path, "discovery file owned by another process, skipping removal");
+            tracing::debug!(
+                ?path,
+                "discovery file owned by another process, skipping removal"
+            );
             Ok(())
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),

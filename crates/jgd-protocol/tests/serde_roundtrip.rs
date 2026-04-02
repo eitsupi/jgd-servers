@@ -194,7 +194,10 @@ fn deserialize_from_wire_format() {
 
     let json = r#"{"type":"metrics_response","id":1,"width":48.5,"ascent":10.2,"descent":2.8}"#;
     let msg: Message = serde_json::from_str(json).unwrap();
-    assert!(matches!(msg, Message::MetricsResponse(MetricsResponse { id: 1, .. })));
+    assert!(matches!(
+        msg,
+        Message::MetricsResponse(MetricsResponse { id: 1, .. })
+    ));
 }
 
 #[test]

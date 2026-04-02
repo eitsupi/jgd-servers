@@ -42,8 +42,7 @@ impl TestServer {
         let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let socket_path = tmp_dir.path().join("jgd-test.sock");
 
-        let listener =
-            Listener::bind_unix(&socket_path).expect("failed to bind unix socket");
+        let listener = Listener::bind_unix(&socket_path).expect("failed to bind unix socket");
         let hub = hub::spawn();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -51,13 +50,9 @@ impl TestServer {
         let hub_clone = hub.clone();
         let name = server_name.to_owned();
         tokio::spawn(async move {
-            serve::serve(
-                listener,
-                hub_clone,
-                name,
-                Transport::Unix,
-                async { let _ = shutdown_rx.await; },
-            )
+            serve::serve(listener, hub_clone, name, Transport::Unix, async {
+                let _ = shutdown_rx.await;
+            })
             .await;
         });
 
@@ -115,10 +110,7 @@ impl RClient {
 
     /// Send a message to the server.
     pub async fn send(&mut self, msg: Message) {
-        self.framed
-            .send(msg)
-            .await
-            .expect("failed to send message");
+        self.framed.send(msg).await.expect("failed to send message");
     }
 
     /// Receive the next message, with the default timeout.
@@ -174,20 +166,17 @@ impl RClient {
     #[allow(dead_code)]
     pub async fn assert_no_message(&mut self, duration: Duration) {
         let result = self.recv_timeout(duration).await;
-        assert!(
-            result.is_none(),
-            "expected no message, got {result:?}"
-        );
+        assert!(result.is_none(), "expected no message, got {result:?}");
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use jgd_protocol::GraphicsContext;
     use jgd_protocol::message::{
         DeviceInfo, FrameMessage, MetricsKind, MetricsRequest, Plot, ResizeMessage,
     };
-    use jgd_protocol::GraphicsContext;
 
     fn make_frame(session_id: Option<&str>) -> Message {
         Message::Frame(FrameMessage {
