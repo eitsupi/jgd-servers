@@ -1,6 +1,7 @@
-//! SVG rendering backend.
+//! SVG rendering backend using quick-xml.
 
-use std::fmt::Write;
+use quick_xml::Writer;
+use quick_xml::events::{BytesStart, BytesText, Event};
 
 use jgd_protocol::{
     DrawingOp, FillRule, GraphicsContext, LineCap, LineJoin, Plot, gc::FontContext,
@@ -22,36 +23,43 @@ pub struct SvgRenderer {
     pub output_height: Option<f64>,
 }
 
+/// Error type for SVG rendering.
+#[derive(Debug, thiserror::Error)]
+pub enum SvgError {
+    #[error("XML error: {0}")]
+    Xml(#[from] quick_xml::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 impl Renderer for SvgRenderer {
     type Output = String;
-    type Error = std::fmt::Error;
+    type Error = SvgError;
 
-    fn render(&self, plot: &Plot) -> Result<String, std::fmt::Error> {
-        // Device dimensions define the coordinate space (viewBox).
+    fn render(&self, plot: &Plot) -> Result<String, SvgError> {
         let w = plot.device.width;
         let h = plot.device.height;
 
-        let mut defs = String::new();
-        let mut body = String::new();
+        let mut defs_writer = Writer::new(Vec::new());
+        let mut body_writer = Writer::new(Vec::new());
         let mut clip_id: usize = 0;
-        // Track nesting so that clip <g> and group <g> don't interfere.
         let mut nesting: Vec<NestingKind> = Vec::new();
 
         // Background.
         if let Some(bg) = &plot.device.bg {
-            writeln!(
-                body,
-                "  <rect width=\"{w}\" height=\"{h}\" fill=\"{}\"/>",
-                xml_escape(bg),
-            )?;
+            let elem = BytesStart::new("rect")
+                .with_attributes(vec![
+                    ("width", ftoa(w).as_str()),
+                    ("height", ftoa(h).as_str()),
+                    ("fill", bg.as_str()),
+                ]);
+            body_writer.write_event(Event::Empty(elem))?;
         }
 
         for op in &plot.ops {
             match op {
                 DrawingOp::Clip { x0, y0, x1, y1 } => {
-                    // Close only the innermost clip group (skip over any
-                    // intervening user groups so they remain correctly nested).
-                    close_innermost_clip(&mut body, &mut nesting)?;
+                    close_innermost_clip(&mut body_writer, &mut nesting)?;
 
                     let cid = clip_id;
                     clip_id += 1;
@@ -59,39 +67,56 @@ impl Renderer for SvgRenderer {
                     let cy = y0.min(*y1);
                     let cw = (x1 - x0).abs();
                     let ch = (y1 - y0).abs();
-                    writeln!(
-                        defs,
-                        "    <clipPath id=\"clip-{cid}\"><rect x=\"{cx}\" y=\"{cy}\" \
-                         width=\"{cw}\" height=\"{ch}\"/></clipPath>",
-                    )?;
-                    writeln!(body, "  <g clip-path=\"url(#clip-{cid})\">")?;
+
+                    // Write clipPath def.
+                    let clip_start =
+                        BytesStart::new("clipPath").with_attributes(vec![(
+                            "id",
+                            format!("clip-{cid}").as_str(),
+                        )]);
+                    defs_writer.write_event(Event::Start(clip_start.borrow()))?;
+                    let rect = BytesStart::new("rect").with_attributes(vec![
+                        ("x", ftoa(cx).as_str()),
+                        ("y", ftoa(cy).as_str()),
+                        ("width", ftoa(cw).as_str()),
+                        ("height", ftoa(ch).as_str()),
+                    ]);
+                    defs_writer.write_event(Event::Empty(rect))?;
+                    defs_writer.write_event(Event::End(clip_start.to_end()))?;
+
+                    // Open clip group in body.
+                    let g = BytesStart::new("g").with_attributes(vec![(
+                        "clip-path",
+                        format!("url(#clip-{cid})").as_str(),
+                    )]);
+                    body_writer.write_event(Event::Start(g))?;
                     nesting.push(NestingKind::Clip);
                 }
 
                 DrawingOp::Line { x1, y1, x2, y2, gc } => {
-                    write!(
-                        body,
-                        "    <line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\""
-                    )?;
-                    write_stroke_attrs(&mut body, gc)?;
-                    body.push_str("/>\n");
+                    let mut elem = BytesStart::new("line");
+                    push_attr(&mut elem, "x1", &ftoa(*x1));
+                    push_attr(&mut elem, "y1", &ftoa(*y1));
+                    push_attr(&mut elem, "x2", &ftoa(*x2));
+                    push_attr(&mut elem, "y2", &ftoa(*y2));
+                    push_stroke_attrs(&mut elem, gc);
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Polyline { x, y, gc } => {
-                    body.push_str("    <polyline points=\"");
-                    write_points(&mut body, x, y)?;
-                    body.push('"');
-                    write_stroke_attrs(&mut body, gc)?;
-                    body.push_str(" fill=\"none\"/>\n");
+                    let mut elem = BytesStart::new("polyline");
+                    push_attr(&mut elem, "points", &format_points(x, y));
+                    push_stroke_attrs(&mut elem, gc);
+                    push_attr(&mut elem, "fill", "none");
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Polygon { x, y, gc } => {
-                    body.push_str("    <polygon points=\"");
-                    write_points(&mut body, x, y)?;
-                    body.push('"');
-                    write_stroke_attrs(&mut body, gc)?;
-                    write_fill_attr(&mut body, gc)?;
-                    body.push_str("/>\n");
+                    let mut elem = BytesStart::new("polygon");
+                    push_attr(&mut elem, "points", &format_points(x, y));
+                    push_stroke_attrs(&mut elem, gc);
+                    push_fill_attr(&mut elem, gc);
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Rect { x0, y0, x1, y1, gc } => {
@@ -99,20 +124,24 @@ impl Renderer for SvgRenderer {
                     let ry = y0.min(*y1);
                     let rw = (x1 - x0).abs();
                     let rh = (y1 - y0).abs();
-                    write!(
-                        body,
-                        "    <rect x=\"{rx}\" y=\"{ry}\" width=\"{rw}\" height=\"{rh}\"",
-                    )?;
-                    write_stroke_attrs(&mut body, gc)?;
-                    write_fill_attr(&mut body, gc)?;
-                    body.push_str("/>\n");
+                    let mut elem = BytesStart::new("rect");
+                    push_attr(&mut elem, "x", &ftoa(rx));
+                    push_attr(&mut elem, "y", &ftoa(ry));
+                    push_attr(&mut elem, "width", &ftoa(rw));
+                    push_attr(&mut elem, "height", &ftoa(rh));
+                    push_stroke_attrs(&mut elem, gc);
+                    push_fill_attr(&mut elem, gc);
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Circle { x, y, r, gc } => {
-                    write!(body, "    <circle cx=\"{x}\" cy=\"{y}\" r=\"{r}\"")?;
-                    write_stroke_attrs(&mut body, gc)?;
-                    write_fill_attr(&mut body, gc)?;
-                    body.push_str("/>\n");
+                    let mut elem = BytesStart::new("circle");
+                    push_attr(&mut elem, "cx", &ftoa(*x));
+                    push_attr(&mut elem, "cy", &ftoa(*y));
+                    push_attr(&mut elem, "r", &ftoa(*r));
+                    push_stroke_attrs(&mut elem, gc);
+                    push_fill_attr(&mut elem, gc);
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Text {
@@ -123,10 +152,10 @@ impl Renderer for SvgRenderer {
                     hadj,
                     gc,
                 } => {
-                    body.push_str("    <text");
-                    write!(body, " x=\"{x}\" y=\"{y}\"")?;
+                    let mut elem = BytesStart::new("text");
+                    push_attr(&mut elem, "x", &ftoa(*x));
+                    push_attr(&mut elem, "y", &ftoa(*y));
 
-                    // text-anchor from hadj.
                     let anchor = if *hadj >= 0.9 {
                         "end"
                     } else if *hadj >= 0.4 {
@@ -135,24 +164,28 @@ impl Renderer for SvgRenderer {
                         "start"
                     };
                     if anchor != "start" {
-                        write!(body, " text-anchor=\"{anchor}\"")?;
+                        push_attr(&mut elem, "text-anchor", anchor);
                     }
 
-                    // Rotation (R uses counter-clockwise degrees, SVG clockwise).
                     if rot.abs() > 1e-6 {
-                        write!(body, " transform=\"rotate({},{x},{y})\"", -rot)?;
+                        push_attr(
+                            &mut elem,
+                            "transform",
+                            &format!("rotate({},{},{})", -rot, x, y),
+                        );
                     }
 
-                    // Text color comes from gc.col in R.
                     match &gc.col {
-                        Some(c) => write!(body, " fill=\"{}\"", xml_escape(c))?,
-                        None => body.push_str(" fill=\"none\""),
+                        Some(c) => push_attr(&mut elem, "fill", c),
+                        None => push_attr(&mut elem, "fill", "none"),
                     }
 
-                    write_font_attrs(&mut body, &gc.font)?;
-                    body.push('>');
-                    body.push_str(&xml_escape(text));
-                    body.push_str("</text>\n");
+                    push_font_attrs(&mut elem, &gc.font);
+
+                    body_writer.write_event(Event::Start(elem.borrow()))?;
+                    body_writer
+                        .write_event(Event::Text(BytesText::new(text)))?;
+                    body_writer.write_event(Event::End(elem.to_end()))?;
                 }
 
                 DrawingOp::Path {
@@ -160,27 +193,29 @@ impl Renderer for SvgRenderer {
                     subpaths,
                     gc,
                 } => {
-                    body.push_str("    <path d=\"");
+                    let mut d = String::new();
                     for subpath in subpaths {
                         for (i, pt) in subpath.iter().enumerate() {
                             if i == 0 {
-                                write!(body, "M{} {}", pt[0], pt[1])?;
+                                d.push_str(&format!("M{} {}", pt[0], pt[1]));
                             } else {
-                                write!(body, " L{} {}", pt[0], pt[1])?;
+                                d.push_str(&format!(" L{} {}", pt[0], pt[1]));
                             }
                         }
-                        body.push_str(" Z");
+                        d.push_str(" Z");
                     }
-                    body.push('"');
-
                     let rule = match winding {
                         FillRule::Nonzero => "nonzero",
                         FillRule::Evenodd => "evenodd",
                     };
-                    write!(body, " fill-rule=\"{rule}\" clip-rule=\"{rule}\"")?;
-                    write_stroke_attrs(&mut body, gc)?;
-                    write_fill_attr(&mut body, gc)?;
-                    body.push_str("/>\n");
+
+                    let mut elem = BytesStart::new("path");
+                    push_attr(&mut elem, "d", &d);
+                    push_attr(&mut elem, "fill-rule", rule);
+                    push_attr(&mut elem, "clip-rule", rule);
+                    push_stroke_attrs(&mut elem, gc);
+                    push_fill_attr(&mut elem, gc);
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
                 DrawingOp::Raster {
@@ -193,68 +228,82 @@ impl Renderer for SvgRenderer {
                     data,
                     ..
                 } => {
-                    write!(
-                        body,
-                        "    <image x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\"",
-                    )?;
+                    let mut elem = BytesStart::new("image");
+                    push_attr(&mut elem, "x", &ftoa(*x));
+                    push_attr(&mut elem, "y", &ftoa(*y));
+                    push_attr(&mut elem, "width", &ftoa(*w));
+                    push_attr(&mut elem, "height", &ftoa(*h));
                     if rot.abs() > 1e-6 {
-                        write!(body, " transform=\"rotate({},{x},{y})\"", -rot)?;
+                        push_attr(
+                            &mut elem,
+                            "transform",
+                            &format!("rotate({},{},{})", -rot, x, y),
+                        );
                     }
                     let rendering = if *interpolate {
                         "optimizeQuality"
                     } else {
                         "optimizeSpeed"
                     };
-                    write!(body, " image-rendering=\"{rendering}\"")?;
-                    writeln!(
-                        body,
-                        " href=\"data:image/png;base64,{}\"/>",
-                        xml_escape(data),
-                    )?;
+                    push_attr(&mut elem, "image-rendering", rendering);
+                    push_attr(
+                        &mut elem,
+                        "href",
+                        &format!("data:image/png;base64,{data}"),
+                    );
+                    body_writer.write_event(Event::Empty(elem))?;
                 }
 
-                // Intentionally ignores BeginGroup.ext — no SVG mapping yet.
                 DrawingOp::BeginGroup { .. } => {
-                    body.push_str("    <g>\n");
+                    body_writer.write_event(Event::Start(BytesStart::new("g")))?;
                     nesting.push(NestingKind::Group);
                 }
                 DrawingOp::EndGroup => {
-                    // If a clip sits above the group on the stack, close
-                    // it first so the group's </g> matches its own <g>.
                     if let Some(NestingKind::Clip) = nesting.last() {
-                        close_innermost_clip(&mut body, &mut nesting)?;
+                        close_innermost_clip(&mut body_writer, &mut nesting)?;
                     }
                     if let Some(NestingKind::Group) = nesting.last() {
                         nesting.pop();
                     }
-                    body.push_str("    </g>\n");
+                    body_writer
+                        .write_event(Event::End(BytesStart::new("g").to_end()))?;
                 }
             }
         }
 
         // Close any remaining clip group.
-        close_innermost_clip(&mut body, &mut nesting)?;
+        close_innermost_clip(&mut body_writer, &mut nesting)?;
 
         // Assemble final SVG document.
         let out_w = self.output_width.unwrap_or(w);
         let out_h = self.output_height.unwrap_or(h);
-        let mut svg = String::new();
-        write!(
-            svg,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{out_w}\" height=\"{out_h}\"",
-        )?;
-        writeln!(
-            svg,
-            " viewBox=\"0 0 {w} {h}\" preserveAspectRatio=\"none\">",
-        )?;
-        if !defs.is_empty() {
-            svg.push_str("  <defs>\n");
-            svg.push_str(&defs);
-            svg.push_str("  </defs>\n");
+
+        let mut svg_writer = Writer::new(Vec::new());
+        let svg_start = BytesStart::new("svg").with_attributes(vec![
+            ("xmlns", "http://www.w3.org/2000/svg"),
+            ("width", ftoa(out_w).as_str()),
+            ("height", ftoa(out_h).as_str()),
+            ("viewBox", format!("0 0 {w} {h}").as_str()),
+            ("preserveAspectRatio", "none"),
+        ]);
+        svg_writer.write_event(Event::Start(svg_start.borrow()))?;
+
+        let defs_bytes = defs_writer.into_inner();
+        if !defs_bytes.is_empty() {
+            svg_writer
+                .write_event(Event::Start(BytesStart::new("defs")))?;
+            svg_writer.get_mut().extend_from_slice(&defs_bytes);
+            svg_writer
+                .write_event(Event::End(BytesStart::new("defs").to_end()))?;
         }
-        svg.push_str(&body);
-        svg.push_str("</svg>\n");
-        Ok(svg)
+
+        let body_bytes = body_writer.into_inner();
+        svg_writer.get_mut().extend_from_slice(&body_bytes);
+
+        svg_writer.write_event(Event::End(svg_start.to_end()))?;
+
+        let bytes = svg_writer.into_inner();
+        Ok(String::from_utf8(bytes).expect("quick-xml produces valid UTF-8"))
     }
 }
 
@@ -262,35 +311,33 @@ impl Renderer for SvgRenderer {
 // Nesting
 // ---------------------------------------------------------------------------
 
-/// Tracks whether an open `<g>` belongs to a clip region or a user group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestingKind {
     Clip,
     Group,
 }
 
-/// Close the innermost clip `<g>`, temporarily re-closing and re-opening
-/// any intervening user groups so the SVG nesting stays valid.
-fn close_innermost_clip(body: &mut String, nesting: &mut Vec<NestingKind>) -> std::fmt::Result {
-    // Find the innermost Clip.
+fn close_innermost_clip(
+    writer: &mut Writer<Vec<u8>>,
+    nesting: &mut Vec<NestingKind>,
+) -> Result<(), SvgError> {
     let clip_pos = nesting.iter().rposition(|k| *k == NestingKind::Clip);
     let Some(pos) = clip_pos else {
         return Ok(());
     };
 
-    // Close everything from the top down to (and including) the clip.
     let groups_above = nesting.len() - pos - 1;
+    let g_tag = BytesStart::new("g");
+    let end_g = g_tag.to_end();
     for _ in 0..groups_above {
-        body.push_str("    </g>\n"); // close intervening group
+        writer.write_event(Event::End(end_g.borrow()))?;
     }
-    body.push_str("  </g>\n"); // close clip
+    writer.write_event(Event::End(end_g.borrow()))?;
 
-    // Remove the clip entry; keep the group entries so they get re-opened.
     nesting.remove(pos);
 
-    // Re-open the intervening groups.
     for _ in 0..groups_above {
-        body.push_str("    <g>\n");
+        writer.write_event(Event::Start(BytesStart::new("g")))?;
     }
     Ok(())
 }
@@ -299,89 +346,80 @@ fn close_innermost_clip(body: &mut String, nesting: &mut Vec<NestingKind>) -> st
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Intentionally ignores gc.ext — no SVG mapping for extension fields yet.
-fn write_stroke_attrs(buf: &mut String, gc: &GraphicsContext) -> std::fmt::Result {
-    match &gc.col {
-        Some(c) => write!(buf, " stroke=\"{}\"", xml_escape(c))?,
-        None => buf.push_str(" stroke=\"none\""),
+/// Format an f64 for SVG output, stripping unnecessary trailing zeros.
+fn ftoa(v: f64) -> String {
+    if v == v.trunc() {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
     }
-    write!(buf, " stroke-width=\"{}\"", gc.lwd)?;
+}
+
+fn push_attr(elem: &mut BytesStart, key: &str, value: &str) {
+    elem.push_attribute((key, value));
+}
+
+fn push_stroke_attrs(elem: &mut BytesStart, gc: &GraphicsContext) {
+    match &gc.col {
+        Some(c) => push_attr(elem, "stroke", c),
+        None => push_attr(elem, "stroke", "none"),
+    }
+    push_attr(elem, "stroke-width", &ftoa(gc.lwd));
     if !gc.lty.is_empty() {
-        buf.push_str(" stroke-dasharray=\"");
-        for (i, v) in gc.lty.iter().enumerate() {
-            if i > 0 {
-                buf.push(',');
-            }
-            write!(buf, "{v}")?;
-        }
-        buf.push('"');
+        let dash: String = gc
+            .lty
+            .iter()
+            .map(|v| ftoa(*v))
+            .collect::<Vec<_>>()
+            .join(",");
+        push_attr(elem, "stroke-dasharray", &dash);
     }
     let cap = match gc.lend {
         LineCap::Round => "round",
         LineCap::Butt => "butt",
         LineCap::Square => "square",
     };
-    write!(buf, " stroke-linecap=\"{cap}\"")?;
+    push_attr(elem, "stroke-linecap", cap);
     let join = match gc.ljoin {
         LineJoin::Round => "round",
         LineJoin::Miter => "miter",
         LineJoin::Bevel => "bevel",
     };
-    write!(buf, " stroke-linejoin=\"{join}\"")?;
+    push_attr(elem, "stroke-linejoin", join);
     if gc.ljoin == LineJoin::Miter {
-        write!(buf, " stroke-miterlimit=\"{}\"", gc.lmitre)?;
+        push_attr(elem, "stroke-miterlimit", &ftoa(gc.lmitre));
     }
-    Ok(())
 }
 
-fn write_fill_attr(buf: &mut String, gc: &GraphicsContext) -> std::fmt::Result {
+fn push_fill_attr(elem: &mut BytesStart, gc: &GraphicsContext) {
     match &gc.fill {
-        Some(c) => write!(buf, " fill=\"{}\"", xml_escape(c)),
-        None => {
-            buf.push_str(" fill=\"none\"");
-            Ok(())
-        }
+        Some(c) => push_attr(elem, "fill", c),
+        None => push_attr(elem, "fill", "none"),
     }
 }
 
-fn write_font_attrs(buf: &mut String, font: &FontContext) -> std::fmt::Result {
-    // Intentionally ignores font.lineheight — no direct SVG text mapping.
+fn push_font_attrs(elem: &mut BytesStart, font: &FontContext) {
     if !font.family.is_empty() {
-        write!(buf, " font-family=\"{}\"", xml_escape(&font.family))?;
+        push_attr(elem, "font-family", &font.family);
     }
-    write!(buf, " font-size=\"{}\"", font.size)?;
+    push_attr(elem, "font-size", &ftoa(font.size));
     match font.face {
-        2 => buf.push_str(" font-weight=\"bold\""),
-        3 => buf.push_str(" font-style=\"italic\""),
-        4 => buf.push_str(" font-weight=\"bold\" font-style=\"italic\""),
+        2 => push_attr(elem, "font-weight", "bold"),
+        3 => push_attr(elem, "font-style", "italic"),
+        4 => {
+            push_attr(elem, "font-weight", "bold");
+            push_attr(elem, "font-style", "italic");
+        }
         _ => {}
     }
-    Ok(())
 }
 
-fn write_points(buf: &mut String, x: &[f64], y: &[f64]) -> std::fmt::Result {
-    for (i, (px, py)) in x.iter().zip(y.iter()).enumerate() {
-        if i > 0 {
-            buf.push(' ');
-        }
-        write!(buf, "{px},{py}")?;
-    }
-    Ok(())
-}
-
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
+fn format_points(x: &[f64], y: &[f64]) -> String {
+    x.iter()
+        .zip(y.iter())
+        .map(|(px, py)| format!("{},{}", ftoa(*px), ftoa(*py)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -418,7 +456,7 @@ mod tests {
         assert!(svg.starts_with("<svg xmlns="));
         assert!(svg.contains("width=\"800\""));
         assert!(svg.contains("height=\"600\""));
-        assert!(svg.ends_with("</svg>\n"));
+        assert!(svg.ends_with("</svg>"));
     }
 
     #[test]
@@ -511,7 +549,13 @@ mod tests {
             device: device(100.0, 100.0),
         };
         let svg = SvgRenderer::default().render(&plot).unwrap();
-        assert!(svg.contains("&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;"));
+        // quick-xml does not escape `"` in text nodes (valid per XML spec).
+        assert!(svg.contains("&lt;b&gt;&amp;\"test\"&lt;/b&gt;")
+            || svg.contains("&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;"));
+        // Verify the essential escapes are present.
+        assert!(svg.contains("&lt;b&gt;"));
+        assert!(svg.contains("&amp;"));
+        assert!(svg.contains("&lt;/b&gt;"));
     }
 
     #[test]
@@ -646,9 +690,6 @@ mod tests {
 
     #[test]
     fn clip_and_group_interleave() {
-        // BeginGroup → Clip → Line → EndGroup → Line
-        // The clip must close before the group closes, and the trailing
-        // line must appear outside both.
         let plot = Plot {
             session_id: None,
             ops: vec![
@@ -679,21 +720,17 @@ mod tests {
         };
         let svg = SvgRenderer::default().render(&plot).unwrap();
 
-        // Counts must match.
         let opens = svg.matches("<g").count();
         let closes = svg.matches("</g>").count();
         assert_eq!(opens, closes, "mismatched <g>/</g>: {svg}");
 
-        // Verify nesting order: group <g> before clip <g>, and clip
-        // </g> before group </g>.
-        let group_open = svg.find("    <g>\n").expect("missing group <g>");
+        let group_open = svg.find("<g>").expect("missing group <g>");
         let clip_open = svg.find("<g clip-path=").expect("missing clip <g>");
         assert!(
             group_open < clip_open,
             "group <g> should appear before clip <g>: {svg}"
         );
 
-        // The trailing line (x1="60") must appear after both close tags.
         let trailing_line = svg.find("x1=\"60\"").expect("missing trailing line");
         let last_close_g = svg.rfind("</g>").expect("missing </g>");
         assert!(
