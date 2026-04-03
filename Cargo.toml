@@ -29,6 +29,8 @@ fontique = { version = "0.8", features = ["fontconfig-dlopen"] }
 
 # Rendering
 tiny-skia = "0.12"
+quick-xml = { version = "0.39", default-features = false }
+skrifa = "0.40"
 
 # CLI
 clap = { version = "4.6", features = ["derive"] }
@@ -38,12 +40,15 @@ axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.29"
 
 # Terminal UI
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-ratatui-image = "10.0"
+ratatui-image = { version = "10.0", default-features = false }
 
 # Futures
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+# Image decoding (PNG → DynamicImage for ratatui-image)
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Utilities
 anyhow = "1.0"
