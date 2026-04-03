@@ -47,12 +47,11 @@ impl Renderer for SvgRenderer {
 
         // Background.
         if let Some(bg) = &plot.device.bg {
-            let elem = BytesStart::new("rect")
-                .with_attributes(vec![
-                    ("width", ftoa(w).as_str()),
-                    ("height", ftoa(h).as_str()),
-                    ("fill", bg.as_str()),
-                ]);
+            let elem = BytesStart::new("rect").with_attributes(vec![
+                ("width", ftoa(w).as_str()),
+                ("height", ftoa(h).as_str()),
+                ("fill", bg.as_str()),
+            ]);
             body_writer.write_event(Event::Empty(elem))?;
         }
 
@@ -69,11 +68,8 @@ impl Renderer for SvgRenderer {
                     let ch = (y1 - y0).abs();
 
                     // Write clipPath def.
-                    let clip_start =
-                        BytesStart::new("clipPath").with_attributes(vec![(
-                            "id",
-                            format!("clip-{cid}").as_str(),
-                        )]);
+                    let clip_start = BytesStart::new("clipPath")
+                        .with_attributes(vec![("id", format!("clip-{cid}").as_str())]);
                     defs_writer.write_event(Event::Start(clip_start.borrow()))?;
                     let rect = BytesStart::new("rect").with_attributes(vec![
                         ("x", ftoa(cx).as_str()),
@@ -85,10 +81,8 @@ impl Renderer for SvgRenderer {
                     defs_writer.write_event(Event::End(clip_start.to_end()))?;
 
                     // Open clip group in body.
-                    let g = BytesStart::new("g").with_attributes(vec![(
-                        "clip-path",
-                        format!("url(#clip-{cid})").as_str(),
-                    )]);
+                    let g = BytesStart::new("g")
+                        .with_attributes(vec![("clip-path", format!("url(#clip-{cid})").as_str())]);
                     body_writer.write_event(Event::Start(g))?;
                     nesting.push(NestingKind::Clip);
                 }
@@ -183,8 +177,7 @@ impl Renderer for SvgRenderer {
                     push_font_attrs(&mut elem, &gc.font);
 
                     body_writer.write_event(Event::Start(elem.borrow()))?;
-                    body_writer
-                        .write_event(Event::Text(BytesText::new(text)))?;
+                    body_writer.write_event(Event::Text(BytesText::new(text)))?;
                     body_writer.write_event(Event::End(elem.to_end()))?;
                 }
 
@@ -246,11 +239,7 @@ impl Renderer for SvgRenderer {
                         "optimizeSpeed"
                     };
                     push_attr(&mut elem, "image-rendering", rendering);
-                    push_attr(
-                        &mut elem,
-                        "href",
-                        &format!("data:image/png;base64,{data}"),
-                    );
+                    push_attr(&mut elem, "href", &format!("data:image/png;base64,{data}"));
                     body_writer.write_event(Event::Empty(elem))?;
                 }
 
@@ -265,8 +254,7 @@ impl Renderer for SvgRenderer {
                     if let Some(NestingKind::Group) = nesting.last() {
                         nesting.pop();
                     }
-                    body_writer
-                        .write_event(Event::End(BytesStart::new("g").to_end()))?;
+                    body_writer.write_event(Event::End(BytesStart::new("g").to_end()))?;
                 }
             }
         }
@@ -290,11 +278,9 @@ impl Renderer for SvgRenderer {
 
         let defs_bytes = defs_writer.into_inner();
         if !defs_bytes.is_empty() {
-            svg_writer
-                .write_event(Event::Start(BytesStart::new("defs")))?;
+            svg_writer.write_event(Event::Start(BytesStart::new("defs")))?;
             svg_writer.get_mut().extend_from_slice(&defs_bytes);
-            svg_writer
-                .write_event(Event::End(BytesStart::new("defs").to_end()))?;
+            svg_writer.write_event(Event::End(BytesStart::new("defs").to_end()))?;
         }
 
         let body_bytes = body_writer.into_inner();
@@ -348,7 +334,7 @@ fn close_innermost_clip(
 
 /// Format an f64 for SVG output, stripping unnecessary trailing zeros.
 fn ftoa(v: f64) -> String {
-    if v == v.trunc() {
+    if v == v.trunc() && v.abs() < i64::MAX as f64 {
         format!("{}", v as i64)
     } else {
         format!("{v}")
@@ -550,8 +536,10 @@ mod tests {
         };
         let svg = SvgRenderer::default().render(&plot).unwrap();
         // quick-xml does not escape `"` in text nodes (valid per XML spec).
-        assert!(svg.contains("&lt;b&gt;&amp;\"test\"&lt;/b&gt;")
-            || svg.contains("&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;"));
+        assert!(
+            svg.contains("&lt;b&gt;&amp;\"test\"&lt;/b&gt;")
+                || svg.contains("&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;")
+        );
         // Verify the essential escapes are present.
         assert!(svg.contains("&lt;b&gt;"));
         assert!(svg.contains("&amp;"));

@@ -5,9 +5,7 @@ use tiny_skia::{
     Pixmap, PixmapPaint, Rect, Stroke, StrokeDash, Transform,
 };
 
-use jgd_protocol::{
-    DrawingOp, FillRule as OpFillRule, GraphicsContext, LineCap, LineJoin, Plot,
-};
+use jgd_protocol::{DrawingOp, FillRule as OpFillRule, GraphicsContext, LineCap, LineJoin, Plot};
 
 use crate::Renderer;
 use crate::color::parse_rgba;
@@ -52,9 +50,10 @@ impl Renderer for RasterRenderer {
 
         // Background.
         if let Some(bg) = &plot.device.bg
-            && let Some(color) = parse_rgba(bg) {
-                pixmap.fill(color);
-            }
+            && let Some(color) = parse_rgba(bg)
+        {
+            pixmap.fill(color);
+        }
 
         // Clip mask stack: each Clip op pushes a new mask, close pops.
         let mut clip_stack: Vec<Mask> = Vec::new();
@@ -64,13 +63,18 @@ impl Renderer for RasterRenderer {
         for op in &plot.ops {
             match op {
                 DrawingOp::Clip { x0, y0, x1, y1 } => {
+                    // Replace the innermost clip (same semantics as SVG backend's
+                    // close_innermost_clip): pop back to the last group boundary.
+                    let depth = group_clip_depths.last().copied().unwrap_or(0);
+                    clip_stack.truncate(depth);
+
                     let rx = x0.min(*x1) as f32;
                     let ry = y0.min(*y1) as f32;
                     let rw = (x1 - x0).abs() as f32;
                     let rh = (y1 - y0).abs() as f32;
 
-                    let mut mask = Mask::new(out_w, out_h)
-                        .ok_or(RasterError::PixmapCreation(out_w, out_h))?;
+                    let mut mask =
+                        Mask::new(out_w, out_h).ok_or(RasterError::PixmapCreation(out_w, out_h))?;
 
                     if let Some(rect_path) = {
                         let mut pb = PathBuilder::new();
@@ -79,12 +83,7 @@ impl Renderer for RasterRenderer {
                         }
                         pb.finish()
                     } {
-                        mask.fill_path(
-                            &rect_path,
-                            FillRule::Winding,
-                            true,
-                            base_transform,
-                        );
+                        mask.fill_path(&rect_path, FillRule::Winding, true, base_transform);
                     }
 
                     // Intersect with parent mask if any.
@@ -100,28 +99,30 @@ impl Renderer for RasterRenderer {
                     pb.move_to(*x1 as f32, *y1 as f32);
                     pb.line_to(*x2 as f32, *y2 as f32);
                     if let Some(path) = pb.finish()
-                        && let Some((paint, stroke)) = stroke_from_gc(gc) {
-                            pixmap.stroke_path(
-                                &path,
-                                &paint,
-                                &stroke,
-                                base_transform,
-                                clip_stack.last(),
-                            );
-                        }
+                        && let Some((paint, stroke)) = stroke_from_gc(gc)
+                    {
+                        pixmap.stroke_path(
+                            &path,
+                            &paint,
+                            &stroke,
+                            base_transform,
+                            clip_stack.last(),
+                        );
+                    }
                 }
 
                 DrawingOp::Polyline { x, y, gc } => {
                     if let Some(path) = build_polypath(x, y, false)
-                        && let Some((paint, stroke)) = stroke_from_gc(gc) {
-                            pixmap.stroke_path(
-                                &path,
-                                &paint,
-                                &stroke,
-                                base_transform,
-                                clip_stack.last(),
-                            );
-                        }
+                        && let Some((paint, stroke)) = stroke_from_gc(gc)
+                    {
+                        pixmap.stroke_path(
+                            &path,
+                            &paint,
+                            &stroke,
+                            base_transform,
+                            clip_stack.last(),
+                        );
+                    }
                 }
 
                 DrawingOp::Polygon { x, y, gc } => {
@@ -145,28 +146,25 @@ impl Renderer for RasterRenderer {
 
                     // Fill.
                     if let Some(rect) = Rect::from_xywh(rx, ry, rw, rh)
-                        && let Some(paint) = fill_paint(gc) {
-                            pixmap.fill_rect(
-                                rect,
-                                &paint,
-                                base_transform,
-                                clip_stack.last(),
-                            );
-                        }
+                        && let Some(paint) = fill_paint(gc)
+                    {
+                        pixmap.fill_rect(rect, &paint, base_transform, clip_stack.last());
+                    }
                     // Stroke.
                     if let Some(rect) = Rect::from_xywh(rx, ry, rw, rh) {
                         let mut pb = PathBuilder::new();
                         pb.push_rect(rect);
                         if let Some(path) = pb.finish()
-                            && let Some((paint, stroke)) = stroke_from_gc(gc) {
-                                pixmap.stroke_path(
-                                    &path,
-                                    &paint,
-                                    &stroke,
-                                    base_transform,
-                                    clip_stack.last(),
-                                );
-                            }
+                            && let Some((paint, stroke)) = stroke_from_gc(gc)
+                        {
+                            pixmap.stroke_path(
+                                &path,
+                                &paint,
+                                &stroke,
+                                base_transform,
+                                clip_stack.last(),
+                            );
+                        }
                     }
                 }
 
@@ -452,14 +450,7 @@ fn render_raster_image(
     transform = transform.pre_concat(Transform::from_translate(x, y));
     transform = transform.pre_concat(Transform::from_scale(sx, sy));
 
-    pixmap.draw_pixmap(
-        0,
-        0,
-        src.as_ref(),
-        &PixmapPaint::default(),
-        transform,
-        mask,
-    );
+    pixmap.draw_pixmap(0, 0, src.as_ref(), &PixmapPaint::default(), transform, mask);
 }
 
 /// Simple base64 decoder (no external dep needed; R sends standard base64).
@@ -548,7 +539,7 @@ mod tests {
 
     fn simple_gc() -> GraphicsContext {
         GraphicsContext {
-            col: Some("rgba(0,0,0,255)".into()),
+            col: Some("rgba(0,0,0,1)".into()),
             fill: Some("rgba(255,0,0,1)".into()),
             lwd: 2.0,
             ..Default::default()

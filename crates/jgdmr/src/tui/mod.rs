@@ -28,7 +28,13 @@ pub async fn run(hub: HubHandle) -> Result<()> {
 
     let mut terminal = ratatui::init();
 
-    let result = event_loop(&mut terminal, &mut app, &mut broadcast_rx, &mut event_stream).await;
+    let result = event_loop(
+        &mut terminal,
+        &mut app,
+        &mut broadcast_rx,
+        &mut event_stream,
+    )
+    .await;
 
     ratatui::restore();
     result
@@ -60,6 +66,11 @@ async fn event_loop(
                         app.handle_frame(session_id).await?;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("TUI broadcast receiver lagged by {n} messages, refreshing");
+                        app.refresh_sessions().await?;
+                        app.refresh_image().await?;
+                    }
                     _ => {}
                 }
             }

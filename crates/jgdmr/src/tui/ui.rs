@@ -1,10 +1,10 @@
 //! TUI rendering: layout and widgets.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 use ratatui_image::{Resize, StatefulImage};
 
 use super::app::App;
@@ -42,12 +42,18 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Session indicator.
     if let Some(sid) = app.active_session_id() {
-        spans.push(Span::styled(sid, Style::default().add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            sid,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
         if app.sessions.len() > 1 {
             spans.push(Span::raw(format!(" [{}]", app.session_position())));
         }
     } else {
-        spans.push(Span::styled("no session", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            "no session",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     spans.push(Span::raw(" | "));
@@ -64,10 +70,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Status message.
     if let Some(ref status) = app.status {
         spans.push(Span::raw(" | "));
-        spans.push(Span::styled(status.as_str(), Style::default().fg(Color::Yellow)));
+        spans.push(Span::styled(
+            status.as_str(),
+            Style::default().fg(Color::Yellow),
+        ));
     }
 
     let line = Line::from(spans);
-    let status_bar = Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let status_bar =
+        Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(status_bar, area);
 }

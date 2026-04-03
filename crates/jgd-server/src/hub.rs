@@ -730,7 +730,10 @@ mod tests {
 
         let plots = hub.get_plots().await;
         assert_eq!(plots.len(), 2);
-        assert_eq!(plots.iter().filter(|p| p.session_id == "r-600-1").count(), 2);
+        assert_eq!(
+            plots.iter().filter(|p| p.session_id == "r-600-1").count(),
+            2
+        );
     }
 
     #[tokio::test]
