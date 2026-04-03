@@ -29,6 +29,7 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Serialize)]
 pub struct PlotSummary {
     pub session_id: String,
+    pub plot_index: usize,
     pub width: f64,
     pub height: f64,
     pub op_count: usize,
@@ -82,11 +83,14 @@ impl HubHandle {
         rx.await.unwrap_or_default()
     }
 
-    /// Get a stored plot by session ID.
-    pub async fn get_plot(&self, session_id: &str) -> Option<Plot> {
+    /// Get a stored plot by session ID and optional plot index.
+    ///
+    /// When `plot_index` is `None`, returns the latest plot for the session.
+    pub async fn get_plot(&self, session_id: &str, plot_index: Option<usize>) -> Option<Plot> {
         let (tx, rx) = oneshot::channel();
         let _ = self.cmd_tx.send(HubCommand::GetPlot {
             session_id: session_id.to_owned(),
+            plot_index,
             reply: tx,
         });
         rx.await.ok().flatten()
@@ -115,6 +119,7 @@ enum HubCommand {
     },
     GetPlot {
         session_id: String,
+        plot_index: Option<usize>,
         reply: oneshot::Sender<Option<Plot>>,
     },
 }
@@ -134,8 +139,8 @@ struct HubState {
     retired_session_ids: HashSet<String>,
     session_reuse_counter: u64,
     broadcast_tx: broadcast::Sender<Message>,
-    /// Latest plot per session, keyed by session_id.
-    plots: HashMap<String, Plot>,
+    /// Plot history per session, keyed by session_id.
+    plots: HashMap<String, Vec<Plot>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -204,17 +209,31 @@ async fn run(
                 let summaries = state
                     .plots
                     .iter()
-                    .map(|(sid, plot)| PlotSummary {
-                        session_id: sid.clone(),
-                        width: plot.device.width,
-                        height: plot.device.height,
-                        op_count: plot.ops.len(),
+                    .flat_map(|(sid, plots)| {
+                        plots.iter().enumerate().map(|(idx, plot)| PlotSummary {
+                            session_id: sid.clone(),
+                            plot_index: idx,
+                            width: plot.device.width,
+                            height: plot.device.height,
+                            op_count: plot.ops.len(),
+                        })
                     })
                     .collect();
                 let _ = reply.send(summaries);
             }
-            HubCommand::GetPlot { session_id, reply } => {
-                let _ = reply.send(state.plots.get(&session_id).cloned());
+            HubCommand::GetPlot {
+                session_id,
+                plot_index,
+                reply,
+            } => {
+                let result = state.plots.get(&session_id).and_then(|plots| {
+                    match plot_index {
+                        Some(idx) => plots.get(idx),
+                        None => plots.last(),
+                    }
+                    .cloned()
+                });
+                let _ = reply.send(result);
             }
         }
     }
@@ -332,9 +351,32 @@ impl HubState {
             frame.plot.session_id = Some(session_id.clone());
         }
 
-        // Store the latest plot for REST API access.
+        // Store the plot in history for REST API access.
         if let Some(ref sid) = frame.plot.session_id {
-            self.plots.insert(sid.clone(), frame.plot.clone());
+            let plots = self.plots.entry(sid.clone()).or_default();
+
+            let plot_idx = if plots.is_empty() || frame.new_page == Some(true) {
+                // New plot page — append to history.
+                plots.push(frame.plot.clone());
+                plots.len() - 1
+            } else if let Some(idx) = frame.plot_index.map(|i| i as usize) {
+                // Targeted update (e.g. resize replay) — update specific entry.
+                if let Some(p) = plots.get_mut(idx) {
+                    *p = frame.plot.clone();
+                    idx
+                } else {
+                    let last = plots.len() - 1;
+                    plots[last] = frame.plot.clone();
+                    last
+                }
+            } else {
+                // Incremental or normal update — replace the latest entry.
+                let last = plots.len() - 1;
+                plots[last] = frame.plot.clone();
+                last
+            };
+
+            frame.plot_index = Some(plot_idx as u32);
         }
 
         let _ = self.broadcast_tx.send(Message::Frame(frame));
@@ -400,6 +442,14 @@ mod tests {
     use jgd_protocol::message::{DeviceInfo, Plot};
 
     fn make_frame(session_id: Option<&str>) -> FrameMessage {
+        make_frame_opts(session_id, None, None)
+    }
+
+    fn make_frame_opts(
+        session_id: Option<&str>,
+        new_page: Option<bool>,
+        plot_index: Option<u32>,
+    ) -> FrameMessage {
         FrameMessage {
             plot: Plot {
                 session_id: session_id.map(String::from),
@@ -412,9 +462,9 @@ mod tests {
                 },
             },
             incremental: false,
-            new_page: None,
+            new_page,
             resize_replay: None,
-            plot_index: None,
+            plot_index,
             plot_number: None,
             ext: None,
         }
@@ -652,6 +702,96 @@ mod tests {
                 assert!(resp.width > 0.0);
             }
             other => panic!("expected MetricsResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plot_history_new_page_appends() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // First frame (no new_page) — creates first entry.
+        hub.r_message(conn, Message::Frame(make_frame(Some("r-600-1"))));
+        let _ = sub.recv().await.unwrap();
+
+        // Second frame with new_page=true — appends.
+        hub.r_message(
+            conn,
+            Message::Frame(make_frame_opts(Some("r-600-1"), Some(true), None)),
+        );
+        let _ = sub.recv().await.unwrap();
+
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), 2);
+        assert_eq!(plots.iter().filter(|p| p.session_id == "r-600-1").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn plot_history_update_replaces_latest() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // First frame.
+        hub.r_message(conn, Message::Frame(make_frame(Some("r-700-1"))));
+        let _ = sub.recv().await.unwrap();
+
+        // Second frame without new_page — replaces.
+        hub.r_message(conn, Message::Frame(make_frame(Some("r-700-1"))));
+        let _ = sub.recv().await.unwrap();
+
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_plot_by_index() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // Create two plots.
+        hub.r_message(conn, Message::Frame(make_frame(Some("r-800-1"))));
+        let _ = sub.recv().await.unwrap();
+        hub.r_message(
+            conn,
+            Message::Frame(make_frame_opts(Some("r-800-1"), Some(true), None)),
+        );
+        let _ = sub.recv().await.unwrap();
+
+        // Get by index.
+        assert!(hub.get_plot("r-800-1", Some(0)).await.is_some());
+        assert!(hub.get_plot("r-800-1", Some(1)).await.is_some());
+        assert!(hub.get_plot("r-800-1", Some(2)).await.is_none());
+
+        // None returns latest (index 1).
+        assert!(hub.get_plot("r-800-1", None).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn broadcast_frame_includes_plot_index() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // First frame.
+        hub.r_message(conn, Message::Frame(make_frame(Some("r-900-1"))));
+        let msg = sub.recv().await.unwrap();
+        match msg {
+            Message::Frame(f) => assert_eq!(f.plot_index, Some(0)),
+            other => panic!("expected Frame, got {other:?}"),
+        }
+
+        // New page.
+        hub.r_message(
+            conn,
+            Message::Frame(make_frame_opts(Some("r-900-1"), Some(true), None)),
+        );
+        let msg = sub.recv().await.unwrap();
+        match msg {
+            Message::Frame(f) => assert_eq!(f.plot_index, Some(1)),
+            other => panic!("expected Frame, got {other:?}"),
         }
     }
 }

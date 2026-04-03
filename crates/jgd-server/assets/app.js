@@ -2,25 +2,39 @@
 (function () {
     'use strict';
 
-    const plotImg = document.getElementById('plot-img');
-    const plotContainer = document.getElementById('plot-container');
-    const wsStatus = document.getElementById('ws-status');
-    const btnPrev = document.getElementById('btn-prev');
-    const btnNext = document.getElementById('btn-next');
-    const plotInfo = document.getElementById('plot-info');
+    var plotImg = document.getElementById('plot-img');
+    var plotContainer = document.getElementById('plot-container');
+    var wsStatus = document.getElementById('ws-status');
+    var btnPrev = document.getElementById('btn-prev');
+    var btnNext = document.getElementById('btn-next');
+    var plotInfo = document.getElementById('plot-info');
 
     // --- Plot tracking ---
-    // Each session has an array of plot snapshots (session_id values).
-    // For simplicity, we track a single "current session" and an index.
-    let sessions = [];       // ordered list of session_ids that have plots
-    let currentIndex = -1;
+    // Each entry is {sessionId, plotIndex}.
+    var plotEntries = [];
+    var currentIndex = -1;
 
-    function addSession(sessionId) {
-        if (!sessions.includes(sessionId)) {
-            sessions.push(sessionId);
+    // Track per-session plot count so we can assign indices for new pages.
+    var sessionPlotCount = {};
+
+    function addOrUpdatePlot(sessionId, plotIndex, isNewPage) {
+        if (sessionPlotCount[sessionId] === undefined) {
+            // First plot for this session.
+            sessionPlotCount[sessionId] = 0;
         }
-        // Always navigate to the latest.
-        currentIndex = sessions.length - 1;
+
+        if (plotEntries.length === 0
+            || !plotEntries.some(function (e) { return e.sessionId === sessionId; })
+            || isNewPage) {
+            // New session or new page — add entry.
+            var idx = (plotIndex !== undefined && plotIndex !== null)
+                ? plotIndex
+                : sessionPlotCount[sessionId];
+            sessionPlotCount[sessionId] = idx + 1;
+            plotEntries.push({ sessionId: sessionId, plotIndex: idx });
+            currentIndex = plotEntries.length - 1;
+        }
+        // In all cases, refresh the display.
         updateToolbar();
         fetchAndDisplay();
     }
@@ -34,7 +48,7 @@
     }
 
     function navigateNext() {
-        if (currentIndex < sessions.length - 1) {
+        if (currentIndex < plotEntries.length - 1) {
             currentIndex++;
             updateToolbar();
             fetchAndDisplay();
@@ -42,29 +56,31 @@
     }
 
     function updateToolbar() {
-        if (sessions.length === 0) {
+        if (plotEntries.length === 0) {
             plotInfo.textContent = 'No plots';
             btnPrev.disabled = true;
             btnNext.disabled = true;
         } else {
-            plotInfo.textContent = (currentIndex + 1) + ' / ' + sessions.length;
+            plotInfo.textContent = (currentIndex + 1) + ' / ' + plotEntries.length;
             btnPrev.disabled = currentIndex <= 0;
-            btnNext.disabled = currentIndex >= sessions.length - 1;
+            btnNext.disabled = currentIndex >= plotEntries.length - 1;
         }
     }
 
     // --- SVG display ---
     function fetchAndDisplay() {
-        if (currentIndex < 0 || currentIndex >= sessions.length) return;
-        const sid = sessions[currentIndex];
-        const w = plotContainer.clientWidth;
-        const h = plotContainer.clientHeight;
-        const url = '/plots/' + encodeURIComponent(sid) + '/svg?width=' + w + '&height=' + h;
+        if (currentIndex < 0 || currentIndex >= plotEntries.length) return;
+        var entry = plotEntries[currentIndex];
+        var w = plotContainer.clientWidth;
+        var h = plotContainer.clientHeight;
+        var url = '/plots/' + encodeURIComponent(entry.sessionId)
+            + '/svg?width=' + w + '&height=' + h
+            + '&plot_index=' + entry.plotIndex;
         plotImg.src = url;
     }
 
     // --- Resize handling ---
-    let resizeTimer = null;
+    var resizeTimer = null;
     function onResize() {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(function () {
@@ -72,13 +88,15 @@
             fetchAndDisplay();
             // Send resize to server so R can re-render.
             if (ws && ws.readyState === WebSocket.OPEN) {
-                const msg = {
+                var msg = {
                     type: 'resize',
                     width: plotContainer.clientWidth,
                     height: plotContainer.clientHeight
                 };
-                if (currentIndex >= 0 && currentIndex < sessions.length) {
-                    msg.sessionId = sessions[currentIndex];
+                if (currentIndex >= 0 && currentIndex < plotEntries.length) {
+                    var entry = plotEntries[currentIndex];
+                    msg.sessionId = entry.sessionId;
+                    msg.plotIndex = entry.plotIndex;
                 }
                 ws.send(JSON.stringify(msg));
             }
@@ -92,12 +110,12 @@
     }
 
     // --- WebSocket ---
-    let ws = null;
-    let reconnectDelay = 2000;
-    const MAX_RECONNECT_DELAY = 30000;
+    var ws = null;
+    var reconnectDelay = 2000;
+    var MAX_RECONNECT_DELAY = 30000;
 
     function connect() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(proto + '//' + location.host + '/ws');
 
         ws.onopen = function () {
@@ -118,7 +136,11 @@
             try { msg = JSON.parse(evt.data); } catch (e) { return; }
 
             if (msg.type === 'frame' && msg.plot && msg.plot.sessionId) {
-                addSession(msg.plot.sessionId);
+                var isNewPage = msg.newPage === true;
+                var plotIndex = (msg.plotIndex !== undefined && msg.plotIndex !== null)
+                    ? msg.plotIndex
+                    : undefined;
+                addOrUpdatePlot(msg.plot.sessionId, plotIndex, isNewPage);
             } else if (msg.type === 'close') {
                 // Session ended — keep plots visible.
             }
@@ -137,12 +159,19 @@
         .then(function (r) { return r.json(); })
         .then(function (plots) {
             plots.forEach(function (p) {
-                if (!sessions.includes(p.session_id)) {
-                    sessions.push(p.session_id);
+                var found = plotEntries.some(function (e) {
+                    return e.sessionId === p.session_id && e.plotIndex === p.plot_index;
+                });
+                if (!found) {
+                    plotEntries.push({ sessionId: p.session_id, plotIndex: p.plot_index });
+                    if (!sessionPlotCount[p.session_id]
+                        || sessionPlotCount[p.session_id] <= p.plot_index) {
+                        sessionPlotCount[p.session_id] = p.plot_index + 1;
+                    }
                 }
             });
-            if (sessions.length > 0) {
-                currentIndex = sessions.length - 1;
+            if (plotEntries.length > 0) {
+                currentIndex = plotEntries.length - 1;
                 updateToolbar();
                 fetchAndDisplay();
             }

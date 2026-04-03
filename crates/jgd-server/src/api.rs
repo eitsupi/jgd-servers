@@ -17,6 +17,7 @@ use crate::hub::HubHandle;
 pub struct RenderParams {
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub plot_index: Option<usize>,
 }
 
 /// Build the REST API router (headless mode).
@@ -63,7 +64,7 @@ async fn render_svg(
         return (StatusCode::BAD_REQUEST, "invalid height").into_response();
     }
 
-    let Some(plot) = hub.get_plot(&id).await else {
+    let Some(plot) = hub.get_plot(&id, params.plot_index).await else {
         return (StatusCode::NOT_FOUND, "plot not found").into_response();
     };
 
