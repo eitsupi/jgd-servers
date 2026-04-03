@@ -9,14 +9,25 @@ use jgd_protocol::{
 use crate::Renderer;
 
 /// Renders a [`Plot`] as an SVG document string.
+///
+/// When `output_width` / `output_height` are set the SVG element uses those
+/// values for its `width`/`height` attributes while a `viewBox` maps the
+/// original device coordinate system, allowing the browser to scale the
+/// drawing to any size.
 #[derive(Debug, Clone, Default)]
-pub struct SvgRenderer;
+pub struct SvgRenderer {
+    /// Desired output width (SVG `width` attribute).  Falls back to device width.
+    pub output_width: Option<f64>,
+    /// Desired output height (SVG `height` attribute).  Falls back to device height.
+    pub output_height: Option<f64>,
+}
 
 impl Renderer for SvgRenderer {
     type Output = String;
     type Error = std::fmt::Error;
 
     fn render(&self, plot: &Plot) -> Result<String, std::fmt::Error> {
+        // Device dimensions define the coordinate space (viewBox).
         let w = plot.device.width;
         let h = plot.device.height;
 
@@ -225,10 +236,16 @@ impl Renderer for SvgRenderer {
         close_innermost_clip(&mut body, &mut nesting)?;
 
         // Assemble final SVG document.
+        let out_w = self.output_width.unwrap_or(w);
+        let out_h = self.output_height.unwrap_or(h);
         let mut svg = String::new();
+        write!(
+            svg,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{out_w}\" height=\"{out_h}\"",
+        )?;
         writeln!(
             svg,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\">",
+            " viewBox=\"0 0 {w} {h}\" preserveAspectRatio=\"none\">",
         )?;
         if !defs.is_empty() {
             svg.push_str("  <defs>\n");
@@ -397,7 +414,7 @@ mod tests {
             ops: vec![],
             device: device(800.0, 600.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.starts_with("<svg xmlns="));
         assert!(svg.contains("width=\"800\""));
         assert!(svg.contains("height=\"600\""));
@@ -416,7 +433,7 @@ mod tests {
                 bg: Some("white".into()),
             },
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("fill=\"white\""));
     }
 
@@ -433,7 +450,7 @@ mod tests {
             }],
             device: device(200.0, 200.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("<line x1=\"0\" y1=\"0\" x2=\"100\" y2=\"100\""));
         assert!(svg.contains("stroke=\"rgba(0,0,0,1)\""));
         assert!(svg.contains("stroke-width=\"2\""));
@@ -452,7 +469,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("x=\"10\""));
         assert!(svg.contains("y=\"20\""));
         assert!(svg.contains("width=\"40\""));
@@ -473,7 +490,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("text-anchor=\"middle\""));
         assert!(svg.contains("transform=\"rotate(-90,50,50)\""));
         assert!(svg.contains(">Hello</text>"));
@@ -493,7 +510,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;"));
     }
 
@@ -518,7 +535,7 @@ mod tests {
             ],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("<defs>"));
         assert!(svg.contains("<clipPath id=\"clip-0\">"));
         assert!(svg.contains("clip-path=\"url(#clip-0)\""));
@@ -544,7 +561,7 @@ mod tests {
             ],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("<circle cx=\"50\" cy=\"50\" r=\"25\""));
         assert!(svg.contains("<polygon points=\"0,100 50,0 100,100\""));
     }
@@ -560,7 +577,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("fill-rule=\"evenodd\""));
         assert!(svg.contains("d=\"M0 0 L100 0 L100 100 Z\""));
     }
@@ -576,7 +593,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("<polyline points=\"10,40 20,50 30,60\""));
         assert!(svg.contains("fill=\"none\""));
     }
@@ -598,7 +615,7 @@ mod tests {
             }],
             device: device(200.0, 200.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("x=\"10\" y=\"20\" width=\"64\" height=\"48\""));
         assert!(svg.contains("transform=\"rotate(-45,10,20)\""));
         assert!(svg.contains("image-rendering=\"optimizeSpeed\""));
@@ -623,7 +640,7 @@ mod tests {
             }],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("stroke-dasharray=\"4,2\""));
     }
 
@@ -660,7 +677,7 @@ mod tests {
             ],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
 
         // Counts must match.
         let opens = svg.matches("<g").count();
@@ -692,7 +709,7 @@ mod tests {
             ops: vec![DrawingOp::BeginGroup { ext: None }, DrawingOp::EndGroup],
             device: device(100.0, 100.0),
         };
-        let svg = SvgRenderer.render(&plot).unwrap();
+        let svg = SvgRenderer::default().render(&plot).unwrap();
         assert!(svg.contains("<g>"));
         assert!(svg.contains("</g>"));
     }

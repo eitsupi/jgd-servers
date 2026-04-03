@@ -63,18 +63,16 @@ async fn render_svg(
         return (StatusCode::BAD_REQUEST, "invalid height").into_response();
     }
 
-    let Some(mut plot) = hub.get_plot(&id).await else {
+    let Some(plot) = hub.get_plot(&id).await else {
         return (StatusCode::NOT_FOUND, "plot not found").into_response();
     };
 
-    if let Some(w) = params.width {
-        plot.device.width = w;
-    }
-    if let Some(h) = params.height {
-        plot.device.height = h;
-    }
+    let renderer = SvgRenderer {
+        output_width: params.width,
+        output_height: params.height,
+    };
 
-    match SvgRenderer.render(&plot) {
+    match renderer.render(&plot) {
         Ok(svg) => ([(CONTENT_TYPE, "image/svg+xml")], svg).into_response(),
         Err(e) => {
             tracing::error!("SVG render failed: {e}");
@@ -212,6 +210,9 @@ mod tests {
         let svg = std::str::from_utf8(&body).unwrap();
         assert!(svg.contains("width=\"400\""));
         assert!(svg.contains("height=\"300\""));
+        // viewBox preserves original device coordinate space (800×600).
+        assert!(svg.contains("viewBox=\"0 0 800 600\""));
+        assert!(svg.contains("preserveAspectRatio=\"none\""));
     }
 
     #[tokio::test]
