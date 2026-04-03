@@ -713,4 +713,22 @@ mod tests {
         assert!(svg.contains("<g>"));
         assert!(svg.contains("</g>"));
     }
+
+    #[test]
+    fn output_dimensions_differ_from_device() {
+        let plot = Plot {
+            session_id: None,
+            ops: vec![],
+            device: device(800.0, 600.0),
+        };
+        let renderer = SvgRenderer {
+            output_width: Some(400.0),
+            output_height: Some(300.0),
+        };
+        let svg = renderer.render(&plot).unwrap();
+        assert!(svg.contains(r#"width="400""#));
+        assert!(svg.contains(r#"height="300""#));
+        assert!(svg.contains(r#"viewBox="0 0 800 600""#));
+        assert!(svg.contains(r#"preserveAspectRatio="none""#));
+    }
 }
