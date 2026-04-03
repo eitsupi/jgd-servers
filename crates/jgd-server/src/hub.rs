@@ -365,6 +365,12 @@ impl HubState {
                     *p = frame.plot.clone();
                     idx
                 } else {
+                    tracing::warn!(
+                        session_id = sid.as_str(),
+                        idx,
+                        len = plots.len(),
+                        "plot_index out of bounds, updating last"
+                    );
                     let last = plots.len() - 1;
                     plots[last] = frame.plot.clone();
                     last
