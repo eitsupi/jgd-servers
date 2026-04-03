@@ -10,3 +10,5 @@ repository.workspace = true
 jgd-protocol = { workspace = true }
 parley = { workspace = true }
 fontique = { workspace = true }
+skrifa = { workspace = true }
+tiny-skia = { workspace = true }

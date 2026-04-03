@@ -3,6 +3,9 @@
 //! Provides `strWidth` (text string width) and `metricInfo` (character
 //! ascent/descent/width) computation using the parley text layout engine,
 //! eliminating the browser round-trip required by the Deno reference server.
+//!
+//! Also provides [`text_to_paths`] for converting text to tiny-skia paths
+//! for raster rendering.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -10,8 +13,12 @@ use jgd_protocol::gc::FontContext as ProtocolFontContext;
 use jgd_protocol::message::{MetricsKind, MetricsRequest, MetricsResponse};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, GenericFamily, LayoutContext, LineHeight,
-    StyleProperty,
+    PositionedLayoutItem, StyleProperty,
 };
+use skrifa::instance::{LocationRef, Size};
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::raw::FontRef as ReadFontsRef;
+use skrifa::{GlyphId, MetadataProvider};
 
 /// Shared font and layout contexts for metrics computations.
 ///
@@ -146,6 +153,122 @@ fn fontface_to_weight_and_style(face: u8) -> (parley::FontWeight, parley::FontSt
         3 => (parley::FontWeight::NORMAL, parley::FontStyle::Italic),
         4 => (parley::FontWeight::BOLD, parley::FontStyle::Italic),
         _ => (parley::FontWeight::NORMAL, parley::FontStyle::Normal),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text-to-path conversion for raster rendering
+// ---------------------------------------------------------------------------
+
+/// A positioned glyph with its outline converted to a tiny-skia path.
+pub struct GlyphPath {
+    /// Horizontal offset from the text origin.
+    pub x: f32,
+    /// Vertical offset (typically 0 for single-line).
+    pub y: f32,
+    /// Horizontal advance width.
+    pub advance: f32,
+    /// The glyph outline as a tiny-skia path, or `None` if the glyph has no
+    /// outline (e.g. space character).
+    pub path: Option<tiny_skia::Path>,
+}
+
+/// Convert text into positioned glyph outlines suitable for tiny-skia rendering.
+///
+/// Each glyph's `x`/`y` is relative to the text origin. The caller applies
+/// the final positioning transform (including rotation and horizontal adjustment).
+pub fn text_to_paths(text: &str, font: &ProtocolFontContext) -> Vec<GlyphPath> {
+    let layout = build_layout(text, font);
+    let mut result = Vec::new();
+
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+            let run = glyph_run.run();
+            let font_size = run.font_size();
+            let font_data = run.font();
+            let raw_coords = run.normalized_coords();
+
+            // Get the skrifa font reference from parley's font data.
+            let font_ref = match ReadFontsRef::from_index(
+                font_data.data.as_ref(),
+                font_data.index,
+            ) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let outlines = font_ref.outline_glyphs();
+            // Convert i16 normalized coords to F2Dot14 (same bit representation).
+            let coords: Vec<skrifa::instance::NormalizedCoord> = raw_coords
+                .iter()
+                .map(|&c| skrifa::instance::NormalizedCoord::from_bits(c))
+                .collect();
+            let run_offset = glyph_run.offset();
+            let size = Size::new(font_size);
+
+            for glyph in glyph_run.glyphs() {
+                let glyph_id = GlyphId::from(glyph.id);
+                let gx = run_offset + glyph.x;
+                let gy = glyph.y;
+
+                let path = outlines.get(glyph_id).and_then(|outline| {
+                    let location = LocationRef::new(&coords);
+                    let settings = DrawSettings::unhinted(size, location);
+                    let mut pen = TinySkiaPen::new();
+                    outline.draw(settings, &mut pen).ok()?;
+                    pen.finish()
+                });
+
+                result.push(GlyphPath {
+                    x: gx,
+                    y: gy,
+                    advance: glyph.advance,
+                    path,
+                });
+            }
+        }
+    }
+    result
+}
+
+/// Pen that converts glyph outline commands to a tiny-skia [`PathBuilder`].
+struct TinySkiaPen {
+    pb: tiny_skia::PathBuilder,
+}
+
+impl TinySkiaPen {
+    fn new() -> Self {
+        Self {
+            pb: tiny_skia::PathBuilder::new(),
+        }
+    }
+
+    fn finish(self) -> Option<tiny_skia::Path> {
+        self.pb.finish()
+    }
+}
+
+impl OutlinePen for TinySkiaPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.pb.move_to(x, -y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.pb.line_to(x, -y);
+    }
+
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        self.pb.quad_to(cx0, -cy0, x, -y);
+    }
+
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.pb.cubic_to(cx0, -cy0, cx1, -cy1, x, -y);
+    }
+
+    fn close(&mut self) {
+        self.pb.close();
     }
 }
 
