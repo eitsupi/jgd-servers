@@ -126,6 +126,14 @@ pub fn remove(path: &Path) -> io::Result<()> {
 /// falling back to `$TMPDIR/jgd-{pid}/` if the cache dir is unavailable.
 /// On Windows, returns a named pipe path.
 pub fn default_socket_path() -> PathBuf {
+    socket_path_in(cache_dir())
+}
+
+/// Inner helper: compute socket path given an optional cache root.
+///
+/// Separated from [`default_socket_path`] so tests can pass a temp dir
+/// instead of touching the real cache directory.
+fn socket_path_in(cache: Option<PathBuf>) -> PathBuf {
     let pid = std::process::id();
 
     #[cfg(unix)]
@@ -140,7 +148,7 @@ pub fn default_socket_path() -> PathBuf {
             }
         };
 
-        if let Some(sessions) = cache_dir().map(|d| d.join("sessions")) {
+        if let Some(sessions) = cache.map(|d| d.join("sessions")) {
             create_dir_0700(&sessions);
             sessions.join(format!("{pid}.sock"))
         } else {
@@ -330,12 +338,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn default_socket_path_is_pid_based() {
-        let path = default_socket_path();
+    fn socket_path_is_pid_based() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = socket_path_in(Some(tmp.path().to_path_buf()));
         let pid = std::process::id();
         let name = path.file_name().unwrap().to_string_lossy();
         assert_eq!(name, format!("{pid}.sock"));
-        assert!(path.to_string_lossy().contains("jgd"));
+        // Should be under the provided cache dir, not the real one.
+        assert!(path.starts_with(tmp.path()));
     }
 
     #[cfg(unix)]
