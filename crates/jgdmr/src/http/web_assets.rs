@@ -6,9 +6,9 @@ use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
-const INDEX_HTML: &str = include_str!("../assets/index.html");
-const APP_JS: &str = include_str!("../assets/app.js");
-const STYLE_CSS: &str = include_str!("../assets/style.css");
+const INDEX_HTML: &str = include_str!("../../assets/index.html");
+const APP_JS: &str = include_str!("../../assets/app.js");
+const STYLE_CSS: &str = include_str!("../../assets/style.css");
 
 /// Build a router serving embedded web assets.
 pub fn router() -> Router {

@@ -13,8 +13,6 @@ tcp = []
 [dependencies]
 jgd-protocol = { workspace = true }
 jgd-font-metrics = { workspace = true }
-jgd-render = { workspace = true }
-axum = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -26,6 +24,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tokio-tungstenite = { workspace = true }
 tempfile = { workspace = true }
-tower = { version = "0.5", features = ["util"] }

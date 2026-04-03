@@ -8,9 +8,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
 
-use jgd_render::{Renderer, SvgRenderer};
-
-use crate::hub::HubHandle;
+use jgd_render::{RasterRenderer, Renderer, SvgRenderer};
+use jgd_server::hub::HubHandle;
 
 /// Query parameters for render endpoints.
 #[derive(Debug, Deserialize)]
@@ -32,14 +31,13 @@ pub fn router(hub: HubHandle) -> Router {
 /// Build the full router: REST API + WebSocket + static file serving.
 pub fn full_router(hub: HubHandle) -> Router {
     router(hub.clone())
-        .merge(crate::ws::router(hub))
-        .merge(crate::web_assets::router())
-        .fallback(crate::web_assets::fallback)
+        .merge(super::ws::router(hub))
+        .merge(super::web_assets::router())
+        .fallback(super::web_assets::fallback)
 }
 
 async fn list_plots(State(hub): State<HubHandle>) -> impl IntoResponse {
-    let plots = hub.get_plots().await;
-    axum::Json(plots)
+    axum::Json(hub.get_plots().await)
 }
 
 const MAX_DIMENSION: f64 = 10000.0;
@@ -83,13 +81,37 @@ async fn render_svg(
 }
 
 async fn render_png(
-    Path(_id): Path<String>,
-    Query(_params): Query<RenderParams>,
-) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "PNG rendering not yet implemented",
-    )
+    State(hub): State<HubHandle>,
+    Path(id): Path<String>,
+    Query(params): Query<RenderParams>,
+) -> Response {
+    if let Some(w) = params.width
+        && !validate_dimension(w)
+    {
+        return (StatusCode::BAD_REQUEST, "invalid width").into_response();
+    }
+    if let Some(h) = params.height
+        && !validate_dimension(h)
+    {
+        return (StatusCode::BAD_REQUEST, "invalid height").into_response();
+    }
+
+    let Some(plot) = hub.get_plot(&id, params.plot_index).await else {
+        return (StatusCode::NOT_FOUND, "plot not found").into_response();
+    };
+
+    let renderer = RasterRenderer {
+        output_width: params.width.map(|w| w as u32),
+        output_height: params.height.map(|h| h as u32),
+    };
+
+    match renderer.render(&plot) {
+        Ok(png) => ([(CONTENT_TYPE, "image/png")], png).into_response(),
+        Err(e) => {
+            tracing::error!("PNG render failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal render error").into_response()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -103,14 +125,14 @@ mod tests {
     use jgd_protocol::message::{DeviceInfo, FrameMessage, Message};
     use jgd_protocol::{DrawingOp, GraphicsContext, Plot};
 
+    use jgd_server::hub;
+
     async fn get(app: Router, uri: &str) -> Response<Body> {
         app.into_service()
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
-
-    use crate::hub;
 
     fn make_frame(session_id: &str) -> Message {
         Message::Frame(FrameMessage {
@@ -224,10 +246,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_png_not_implemented() {
+    async fn render_png_not_found() {
         let hub = hub::spawn();
         let resp = get(router(hub), "/plots/any/png").await;
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn render_png_success() {
+        let hub = hub::spawn();
+        inject_frame(&hub, "s1").await;
+        let resp = get(router(hub), "/plots/s1/png").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "image/png"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.starts_with(&[0x89, b'P', b'N', b'G']));
     }
 
     #[tokio::test]

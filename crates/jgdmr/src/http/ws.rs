@@ -9,8 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 
 use jgd_protocol::message::{Message, ResizeMessage};
-
-use crate::hub::HubHandle;
+use jgd_server::hub::HubHandle;
 
 /// Build a router with the WebSocket upgrade endpoint.
 pub fn router(hub: HubHandle) -> Router {
@@ -79,7 +78,7 @@ mod tests {
     use jgd_protocol::message::{DeviceInfo, FrameMessage};
     use jgd_protocol::{DrawingOp, GraphicsContext, Plot};
 
-    use crate::hub;
+    use jgd_server::hub;
 
     fn make_frame(session_id: &str) -> Message {
         Message::Frame(FrameMessage {
@@ -114,7 +113,7 @@ mod tests {
     #[tokio::test]
     async fn ws_receives_broadcast_frame() {
         let hub = hub::spawn();
-        let app = crate::api::full_router(hub.clone());
+        let app = super::super::api::full_router(hub.clone());
 
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();

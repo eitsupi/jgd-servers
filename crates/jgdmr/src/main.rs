@@ -1,3 +1,6 @@
+mod http;
+mod tui;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -118,9 +121,9 @@ async fn run_http(
     // Build HTTP router.
     let app = if headless {
         tracing::info!("headless mode: REST API only");
-        jgd_server::api::router(hub_clone)
+        http::api::router(hub_clone)
     } else {
-        jgd_server::api::full_router(hub_clone)
+        http::api::full_router(hub_clone)
     };
 
     axum::serve(tcp_listener, app)
