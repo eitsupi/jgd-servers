@@ -852,6 +852,8 @@ dependencies = [
  "jgd-protocol",
  "jgd-render",
  "jgd-server",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

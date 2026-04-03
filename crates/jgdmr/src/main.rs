@@ -16,8 +16,9 @@ enum Command {
     /// Start the HTTP server for R graphics.
     Http {
         /// Unix socket path for R connections.
-        #[arg(long, default_value = "/tmp/jgd.sock")]
-        socket: PathBuf,
+        /// If omitted, a temporary PID-based path is generated automatically.
+        #[arg(long)]
+        socket: Option<PathBuf>,
 
         /// HTTP host address to bind to.
         #[arg(long, default_value = "127.0.0.1")]
@@ -54,12 +55,45 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_http(socket: PathBuf, host: &str, port: u16, headless: bool) -> Result<()> {
+async fn run_http(
+    socket_override: Option<PathBuf>,
+    host: &str,
+    port: u16,
+    headless: bool,
+) -> Result<()> {
+    let socket = socket_override.unwrap_or_else(jgd_server::discovery::default_socket_path);
+
     let hub = jgd_server::hub::spawn();
 
     // Start R connection listener.
     let listener = jgd_server::listener::Listener::bind_unix(&socket)?;
     tracing::info!(?socket, "listening for R connections");
+
+    // Start HTTP listener before writing the discovery file so that
+    // the advertised URL is actually reachable.
+    let addr = format!("{host}:{port}");
+    let tcp_listener = TcpListener::bind(&addr).await?;
+    let local_addr = tcp_listener.local_addr()?;
+    tracing::info!(%local_addr, "HTTP server listening");
+
+    // Write discovery file so R clients can auto-connect.
+    let discovery_path = jgd_server::discovery::default_path();
+    if let Some(path) = &discovery_path {
+        let http_url = format!("http://{local_addr}/");
+        let mut server_info = serde_json::Map::new();
+        server_info.insert("httpUrl".into(), serde_json::Value::String(http_url));
+
+        let info = jgd_server::discovery::DiscoveryInfo {
+            server_name: "jgdmr".into(),
+            socket_path: format!("unix://{}", socket.display()),
+            pid: std::process::id(),
+            server_info: Some(server_info),
+            extra: Default::default(),
+        };
+        if let Err(e) = jgd_server::discovery::write(path, &info) {
+            tracing::warn!(%e, "failed to write discovery file");
+        }
+    }
 
     let hub_clone = hub.clone();
     let shutdown_signal = async {
@@ -89,15 +123,14 @@ async fn run_http(socket: PathBuf, host: &str, port: u16, headless: bool) -> Res
         jgd_server::api::full_router(hub_clone)
     };
 
-    let addr = format!("{host}:{port}");
-    let tcp_listener = TcpListener::bind(&addr).await?;
-    tracing::info!(%addr, "HTTP server listening");
-
     axum::serve(tcp_listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
 
-    // Clean up socket file.
+    // Clean up discovery file and socket.
+    if let Some(path) = &discovery_path {
+        let _ = jgd_server::discovery::remove(path);
+    }
     let _ = std::fs::remove_file(&socket);
 
     Ok(())

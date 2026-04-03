@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Discovery file schema.
+///
+/// Unknown top-level fields are preserved via `extra` so that readers
+/// can round-trip files written by newer server versions (the spec says
+/// "Readers should ignore unknown fields for forward compatibility").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryInfo {
@@ -21,6 +25,9 @@ pub struct DiscoveryInfo {
     pub pid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_info: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Unknown fields for forward compatibility.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Resolve the platform-specific cache directory for jgd.
@@ -113,6 +120,42 @@ pub fn remove(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Generate a PID-based Unix socket path for jgd.
+///
+/// Uses the jgd cache directory with a `sessions/` subdirectory,
+/// falling back to `$TMPDIR/jgd-{pid}/` if the cache dir is unavailable.
+/// On Windows, returns a named pipe path.
+pub fn default_socket_path() -> PathBuf {
+    let pid = std::process::id();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let create_dir_0700 = |dir: &Path| {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            if let Err(e) = builder.create(dir) {
+                tracing::warn!(?dir, %e, "failed to create sessions directory");
+            }
+        };
+
+        if let Some(sessions) = cache_dir().map(|d| d.join("sessions")) {
+            create_dir_0700(&sessions);
+            sessions.join(format!("{pid}.sock"))
+        } else {
+            let dir = std::env::temp_dir().join(format!("jgd-{pid}"));
+            create_dir_0700(&dir);
+            dir.join("ipc.sock")
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!(r"\\.\pipe\jgd-{pid}"))
+    }
+}
+
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
 pub fn is_process_alive(pid: u32) -> bool {
@@ -162,6 +205,7 @@ mod tests {
             socket_path: "/tmp/jgd-test.sock".into(),
             pid: std::process::id(),
             server_info: None,
+            extra: Default::default(),
         };
 
         write(&path, &info).unwrap();
@@ -179,6 +223,7 @@ mod tests {
             socket_path: "/tmp/jgd-test.sock".into(),
             pid: 12345,
             server_info: None,
+            extra: Default::default(),
         };
 
         // Should create parent directories.
@@ -206,6 +251,7 @@ mod tests {
             socket_path: "/tmp/other.sock".into(),
             pid: 99999,
             server_info: None,
+            extra: Default::default(),
         };
         write(&path, &info).unwrap();
 
@@ -249,11 +295,47 @@ mod tests {
             socket_path: "/tmp/jgd.sock".into(),
             pid: 1234,
             server_info: Some(server_info),
+            extra: Default::default(),
         };
 
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("httpUrl"));
         assert!(json.contains("8080"));
+    }
+
+    #[test]
+    fn unknown_fields_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("discovery.json");
+
+        // Write JSON with an unknown top-level field.
+        let json = r#"{
+            "serverName": "future-server",
+            "socketPath": "/tmp/future.sock",
+            "pid": 42,
+            "newField": "some-value"
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let info = read(&path).unwrap();
+        assert_eq!(info.server_name, "future-server");
+        assert!(info.extra.contains_key("newField"));
+
+        // Re-write and verify the unknown field is preserved.
+        write(&path, &info).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["newField"], "some-value");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_socket_path_is_pid_based() {
+        let path = default_socket_path();
+        let pid = std::process::id();
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert_eq!(name, format!("{pid}.sock"));
+        assert!(path.to_string_lossy().contains("jgd"));
     }
 
     #[cfg(unix)]
