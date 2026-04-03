@@ -82,18 +82,18 @@ impl App {
     /// Handle a new frame broadcast from the Hub.
     pub async fn handle_frame(&mut self, session_id: Option<&str>) -> Result<()> {
         if self.following_latest {
-            // Auto-navigate to latest plot.
-            // Update session idx *before* refreshing so plot_count reflects
-            // the correct session.
-            if let Some(sid) = session_id {
-                // Refresh first to discover new sessions.
-                self.refresh_sessions().await?;
-                if let Some(idx) = self.sessions.iter().position(|s| s == sid) {
-                    self.active_session_idx = idx;
-                }
+            // Fetch summaries once and reuse.
+            let summaries = self.hub.get_plots().await;
+            self.update_from_summaries(&summaries);
+
+            // Switch to the session that received the frame, then
+            // recalculate plot_count for the new active session.
+            if let Some(sid) = session_id
+                && let Some(idx) = self.sessions.iter().position(|s| s == sid)
+            {
+                self.active_session_idx = idx;
+                self.update_from_summaries(&summaries);
             }
-            // Refresh again after switching to get the correct plot_count.
-            self.refresh_sessions().await?;
             self.current_plot_index = self.plot_count.saturating_sub(1);
             self.refresh_image().await?;
         } else {

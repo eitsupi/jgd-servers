@@ -63,10 +63,13 @@ impl Renderer for RasterRenderer {
         for op in &plot.ops {
             match op {
                 DrawingOp::Clip { x0, y0, x1, y1 } => {
-                    // Replace the innermost clip (same semantics as SVG backend's
-                    // close_innermost_clip): pop back to the last group boundary.
+                    // Close the innermost clip (same as SVG backend's
+                    // close_innermost_clip): pop one clip level, but not
+                    // below the enclosing group boundary.
                     let depth = group_clip_depths.last().copied().unwrap_or(0);
-                    clip_stack.truncate(depth);
+                    if clip_stack.len() > depth {
+                        clip_stack.pop();
+                    }
 
                     let rx = x0.min(*x1) as f32;
                     let ry = y0.min(*y1) as f32;
