@@ -30,6 +30,8 @@ pub struct App {
     pub image_state: Option<StatefulProtocol>,
     /// Status message shown in the status bar.
     pub status: Option<String>,
+    /// True when the terminal lacks a graphics protocol (Sixel/Kitty/iTerm2).
+    pub halfblock_mode: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
 }
@@ -46,6 +48,7 @@ impl App {
             picker,
             image_state: None,
             status: None,
+            halfblock_mode: false,
             should_quit: false,
         }
     }

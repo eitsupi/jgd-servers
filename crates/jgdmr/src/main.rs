@@ -35,6 +35,14 @@ enum Command {
         #[arg(long)]
         headless: bool,
     },
+
+    /// Start the TUI plot viewer.
+    Tui {
+        /// Unix socket path for R connections.
+        /// If omitted, a temporary PID-based path is generated automatically.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -55,6 +63,7 @@ async fn main() -> Result<()> {
             port,
             headless,
         } => run_http(socket, &host, port, headless).await,
+        Command::Tui { socket } => run_tui(socket).await,
     }
 }
 
@@ -129,6 +138,56 @@ async fn run_http(
     axum::serve(tcp_listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
+
+    // Clean up discovery file and socket.
+    if let Some(path) = &discovery_path {
+        let _ = jgd_server::discovery::remove(path);
+    }
+    let _ = std::fs::remove_file(&socket);
+
+    Ok(())
+}
+
+async fn run_tui(socket_override: Option<PathBuf>) -> Result<()> {
+    let socket = socket_override.unwrap_or_else(jgd_server::discovery::default_socket_path);
+
+    let hub = jgd_server::hub::spawn();
+
+    // Start R connection listener.
+    let listener = jgd_server::listener::Listener::bind_unix(&socket)?;
+    tracing::info!(?socket, "listening for R connections");
+
+    // Write discovery file so R clients can auto-connect.
+    let discovery_path = jgd_server::discovery::default_path();
+    if let Some(path) = &discovery_path {
+        let info = jgd_server::discovery::DiscoveryInfo {
+            server_name: "jgdmr".into(),
+            socket_path: format!("unix://{}", socket.display()),
+            pid: std::process::id(),
+            server_info: None,
+            extra: Default::default(),
+        };
+        if let Err(e) = jgd_server::discovery::write(path, &info) {
+            tracing::warn!(%e, "failed to write discovery file");
+        }
+    }
+
+    // Spawn the R connection serve loop.
+    let serve_hub = hub.clone();
+    let server_name = "jgdmr".to_owned();
+    tokio::spawn(async move {
+        jgd_server::serve::serve(
+            listener,
+            serve_hub,
+            server_name,
+            jgd_protocol::Transport::Unix,
+            std::future::pending(),
+        )
+        .await;
+    });
+
+    // Run the TUI event loop (blocks until the user quits).
+    tui::run(hub).await?;
 
     // Clean up discovery file and socket.
     if let Some(path) = &discovery_path {

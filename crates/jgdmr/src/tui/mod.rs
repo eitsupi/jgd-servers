@@ -6,7 +6,7 @@ mod ui;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 
 use jgd_protocol::Message;
 use jgd_server::hub::HubHandle;
@@ -16,7 +16,12 @@ use app::App;
 /// Run the TUI event loop. Blocks until the user quits.
 pub async fn run(hub: HubHandle) -> Result<()> {
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if picker.protocol_type() == ProtocolType::Halfblocks {
+        tracing::warn!("no terminal graphics protocol detected; using half-block rendering");
+    }
+    let is_halfblock = picker.protocol_type() == ProtocolType::Halfblocks;
     let mut app = App::new(hub.clone(), picker);
+    app.halfblock_mode = is_halfblock;
     let mut broadcast_rx = hub.subscribe();
     let mut event_stream = EventStream::new();
 

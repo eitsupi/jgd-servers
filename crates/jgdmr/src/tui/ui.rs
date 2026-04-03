@@ -67,6 +67,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         spans.push(Span::styled("●", Style::default().fg(Color::Green)));
     }
 
+    // Half-block mode warning.
+    if app.halfblock_mode {
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            "halfblock",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
     // Status message.
     if let Some(ref status) = app.status {
         spans.push(Span::raw(" | "));
