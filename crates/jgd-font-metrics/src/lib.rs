@@ -191,7 +191,9 @@ pub fn text_to_paths(text: &str, font: &ProtocolFontContext) -> Vec<GlyphPath> {
             let font_data = run.font();
             let raw_coords = run.normalized_coords();
 
-            // Get the skrifa font reference from parley's font data.
+            // SAFETY NOTE: `ReadFontsRef` borrows `font_data.data`, so `font_ref`,
+            // `outlines`, and each `outline` must not outlive `font_data` (owned by
+            // `run`, which is alive for the duration of this loop iteration).
             let font_ref = match ReadFontsRef::from_index(
                 font_data.data.as_ref(),
                 font_data.index,
@@ -374,6 +376,24 @@ mod tests {
             w_bold >= w_plain,
             "bold ({w_bold}) should be >= plain ({w_plain})"
         );
+    }
+
+    #[test]
+    fn text_to_paths_returns_glyphs() {
+        let gc = make_gc();
+        let paths = text_to_paths("Hello", &gc.font);
+        assert!(!paths.is_empty(), "should return glyph paths for non-empty text");
+        assert!(
+            paths.iter().any(|g| g.path.is_some()),
+            "at least one glyph should have an outline path"
+        );
+    }
+
+    #[test]
+    fn text_to_paths_empty_string() {
+        let gc = make_gc();
+        let paths = text_to_paths("", &gc.font);
+        assert!(paths.is_empty());
     }
 
     #[test]
