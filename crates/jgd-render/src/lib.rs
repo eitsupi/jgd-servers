@@ -1,9 +1,12 @@
 //! Renderer trait and backends (SVG, tiny-skia PNG) for jgd.
 
+pub mod color;
+pub mod raster;
 pub mod svg;
 
 use jgd_protocol::Plot;
 
+pub use raster::RasterRenderer;
 pub use svg::SvgRenderer;
 
 /// Render a [`Plot`] into a concrete output format.

@@ -8,7 +8,10 @@ repository.workspace = true
 
 [dependencies]
 jgd-protocol = { workspace = true }
+jgd-font-metrics = { workspace = true }
 tiny-skia = { workspace = true }
+quick-xml = { workspace = true }
+skrifa = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
