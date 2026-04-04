@@ -45,6 +45,8 @@ pub struct App {
     pub halfblock_mode: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
+    /// Whether to display the keybinding help overlay.
+    pub show_help: bool,
     /// Terminal size in character cells (cols, rows).
     pub terminal_size: (u16, u16),
     /// Cache of rendered images keyed by (session, plot index, pixel size).
@@ -69,6 +71,7 @@ impl App {
             status: None,
             halfblock_mode: false,
             should_quit: false,
+            show_help: false,
             terminal_size,
             image_cache: HashMap::new(),
         }
@@ -76,9 +79,22 @@ impl App {
 
     /// Handle a key press event.
     pub async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // When help overlay is visible, dismiss it on any key.
+        if self.show_help {
+            self.show_help = false;
+            // Force image re-render: after terminal.clear() the graphics
+            // protocol state (e.g. Kitty transmitted flag) is stale.
+            self.image_state = None;
+            self.refresh_image().await?;
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.should_quit = true;
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.prev_plot().await?;

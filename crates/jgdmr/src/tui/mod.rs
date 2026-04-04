@@ -85,7 +85,16 @@ async fn event_loop(
     broadcast_rx: &mut tokio::sync::broadcast::Receiver<Message>,
     event_stream: &mut EventStream,
 ) -> Result<()> {
+    let mut prev_show_help = app.show_help;
     loop {
+        // Force a full redraw when entering the help overlay, so that
+        // terminal graphics protocol images are properly erased.
+        // On dismissal, refresh_image() in handle_key rebuilds the
+        // protocol state so no clear is needed.
+        if app.show_help && !prev_show_help {
+            terminal.clear()?;
+        }
+        prev_show_help = app.show_help;
         terminal.draw(|f| ui::render(f, app))?;
 
         tokio::select! {
