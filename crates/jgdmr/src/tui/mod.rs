@@ -15,10 +15,43 @@ use app::App;
 
 /// Run the TUI event loop. Blocks until the user quits.
 pub async fn run(hub: HubHandle) -> Result<()> {
-    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    if picker.protocol_type() == ProtocolType::Halfblocks {
+    // Enter alternate screen first — Picker::from_query_stdio() must run
+    // after entering alternate screen for accurate font-size detection.
+    let mut terminal = ratatui::init();
+
+    let queried = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    let queried_protocol = queried.protocol_type();
+    if queried_protocol == ProtocolType::Halfblocks {
         tracing::warn!("no terminal graphics protocol detected; using half-block rendering");
     }
+
+    // Rebuild the picker with a corrected font size derived from the
+    // terminal's actual pixel dimensions.  The stdio-queried font_size
+    // is truncated to integers, but real fonts can have fractional
+    // sizes (e.g. 7.33px), causing ratatui-image's cell↔pixel math to
+    // leave pixel gaps at the terminal edges (garbled characters).
+    // Using ceil(window_pixels / cells) ensures the image is at least
+    // as large as the terminal area; any overflow is clipped by the
+    // terminal.
+    let picker = if let Ok(ws) = crossterm::terminal::window_size() {
+        if ws.columns > 0 && ws.rows > 0 && ws.width > 0 && ws.height > 0 {
+            let fw = (ws.width + ws.columns - 1) / ws.columns;
+            let fh = (ws.height + ws.rows - 1) / ws.rows;
+            #[allow(deprecated)]
+            let mut p = Picker::from_fontsize((fw, fh));
+            p.set_protocol_type(queried_protocol);
+            p
+        } else {
+            queried
+        }
+    } else {
+        queried
+    };
+    tracing::debug!(
+        font_size = ?picker.font_size(),
+        protocol = ?picker.protocol_type(),
+        "terminal graphics capabilities detected"
+    );
     let is_halfblock = picker.protocol_type() == ProtocolType::Halfblocks;
     let mut app = App::new(hub.clone(), picker);
     app.halfblock_mode = is_halfblock;
@@ -30,8 +63,6 @@ pub async fn run(hub: HubHandle) -> Result<()> {
     if app.plot_count > 0 {
         app.refresh_image().await?;
     }
-
-    let mut terminal = ratatui::init();
 
     let result = event_loop(
         &mut terminal,

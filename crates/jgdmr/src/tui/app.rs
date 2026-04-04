@@ -8,6 +8,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use std::io::Cursor;
 use std::path::PathBuf;
 
+use jgd_protocol::ResizeMessage;
 use jgd_render::{RasterRenderer, Renderer};
 use jgd_server::hub::{HubHandle, PlotSummary};
 
@@ -89,6 +90,8 @@ impl App {
 
     /// Handle a new frame broadcast from the Hub.
     pub async fn handle_frame(&mut self, session_id: Option<&str>) -> Result<()> {
+        let was_empty = self.sessions.is_empty();
+
         if self.following_latest {
             // Fetch summaries once and reuse.
             let summaries = self.hub.get_plots().await;
@@ -108,6 +111,12 @@ impl App {
             self.status = Some("New plot available".into());
         }
 
+        // On the first frame, send a resize so R knows the terminal dimensions
+        // and replays at the correct size.
+        if was_empty && !self.sessions.is_empty() {
+            self.send_resize(session_id.map(String::from));
+        }
+
         Ok(())
     }
 
@@ -116,11 +125,16 @@ impl App {
         self.terminal_size = (width, height);
         // Invalidate the cached image so it gets re-rendered at the new size.
         self.image_state = None;
+        // Notify R sessions so they replay at the new dimensions.
+        self.send_resize(None);
         self.refresh_image().await?;
         Ok(())
     }
 
-    /// Compute the pixel dimensions for rendering based on terminal size and font metrics.
+    /// Compute the pixel dimensions for rendering based on terminal size.
+    ///
+    /// Uses `cells × font_size` where font_size has been corrected at startup
+    /// via `ceil(window_pixels / cells)` to account for fractional font sizes.
     fn render_pixel_size(&self) -> (u32, u32) {
         let (cols, rows) = self.terminal_size;
         let (fw, fh) = self.picker.font_size();
@@ -128,7 +142,6 @@ impl App {
         let usable_rows = rows.saturating_sub(1);
         let w = (cols as u32) * (fw as u32);
         let h = (usable_rows as u32) * (fh as u32);
-        // Ensure minimum size.
         (w.max(64), h.max(64))
     }
 
@@ -236,14 +249,15 @@ impl App {
         Ok(())
     }
 
-    /// Render a plot to PNG at the appropriate resolution for this terminal.
+    /// Render a plot to PNG at the full terminal pixel size.
+    ///
+    /// The renderer scales from device coordinates to output pixels, so the
+    /// plot fills the entire terminal area without aspect-ratio gaps.
     fn render_plot_to_png(&self, plot: &jgd_protocol::Plot) -> Result<Vec<u8>> {
         let (pixel_w, pixel_h) = self.render_pixel_size();
-        let (render_w, render_h) =
-            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
         let renderer = RasterRenderer {
-            output_width: Some(render_w),
-            output_height: Some(render_h),
+            output_width: Some(pixel_w),
+            output_height: Some(pixel_h),
         };
         renderer.render(plot).map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -264,6 +278,24 @@ impl App {
             self.image_state = None;
             return Ok(());
         };
+
+        // Write debug dimensions to a file (tracing goes to stderr which
+        // conflicts with the TUI's alternate screen).
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/jgdmr-debug.log")
+        {
+            use std::io::Write;
+            let (pw, ph) = self.render_pixel_size();
+            let (fw, fh) = self.picker.font_size();
+            let ws = crossterm::terminal::window_size().ok();
+            let _ = writeln!(
+                f,
+                "refresh_image: terminal_size={:?} font_size=({},{}) window_size={:?} render_pixels=({},{}) device_size=({},{})",
+                self.terminal_size, fw, fh, ws, pw, ph, plot.device.width, plot.device.height
+            );
+        }
 
         let png_bytes = self.render_plot_to_png(&plot)?;
         let dyn_image = ImageReader::new(Cursor::new(png_bytes))
@@ -298,6 +330,36 @@ impl App {
         }
     }
 
+    /// Get the actual terminal pixel dimensions for the usable area
+    /// (excluding the status bar row).
+    fn window_pixel_size(&self) -> (u32, u32) {
+        let (_cols, rows) = self.terminal_size;
+        let usable_rows = rows.saturating_sub(1);
+        if let Ok(ws) = crossterm::terminal::window_size() {
+            if ws.width > 0 && ws.height > 0 && ws.rows > 0 {
+                let w = ws.width as u32;
+                let h = (ws.height as u32) * (usable_rows as u32) / (ws.rows as u32);
+                return (w.max(1), h.max(1));
+            }
+        }
+        // Fallback to font-based calculation.
+        self.render_pixel_size()
+    }
+
+    /// Send a resize message to R so it replays at the current terminal dimensions.
+    ///
+    /// Uses the actual window pixel size (not the ceil-rounded render size)
+    /// so R lays out the plot to fit the visible terminal area.
+    fn send_resize(&self, session_id: Option<String>) {
+        let (w, h) = self.window_pixel_size();
+        self.hub.client_resize(ResizeMessage {
+            width: w as f64,
+            height: h as f64,
+            plot_index: None,
+            session_id,
+        });
+    }
+
     fn default_save_path(&self) -> PathBuf {
         let session = self
             .active_session_id()
@@ -305,18 +367,6 @@ impl App {
             .replace(['/', '\\', ':'], "_");
         PathBuf::from(format!("{session}_{}.png", self.current_plot_index + 1))
     }
-}
-
-/// Compute the largest output size that fits within `max_w × max_h` while
-/// preserving the aspect ratio of `dev_w × dev_h` (uniform scaling).
-fn fit_uniform(dev_w: f64, dev_h: f64, max_w: u32, max_h: u32) -> (u32, u32) {
-    if dev_w <= 0.0 || dev_h <= 0.0 || max_w == 0 || max_h == 0 {
-        return (max_w.max(1), max_h.max(1));
-    }
-    let scale = f64::min(max_w as f64 / dev_w, max_h as f64 / dev_h);
-    let w = (dev_w * scale).round() as u32;
-    let h = (dev_h * scale).round() as u32;
-    (w.max(1), h.max(1))
 }
 
 #[cfg(test)]

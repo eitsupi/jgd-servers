@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
 fn render_image(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if let Some(ref mut image_state) = app.image_state {
-        let image_widget = StatefulImage::default().resize(Resize::Fit(None));
+        let image_widget = StatefulImage::default().resize(Resize::Scale(None));
         f.render_stateful_widget(image_widget, area, image_state);
     } else {
         let msg = if app.sessions.is_empty() {
