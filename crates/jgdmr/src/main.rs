@@ -113,16 +113,20 @@ async fn run_http(
         tracing::info!("shutting down");
     };
 
-    // Spawn the R connection serve loop.
+    // Spawn the R connection serve loop with a shutdown channel so it
+    // stops cooperatively when the HTTP server exits.
+    let (serve_shutdown_tx, serve_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_hub = hub.clone();
     let server_name = "jgdmr".to_owned();
-    tokio::spawn(async move {
+    let serve_handle = tokio::spawn(async move {
         jgd_server::serve::serve(
             listener,
             serve_hub,
             server_name,
             jgd_protocol::Transport::Unix,
-            std::future::pending(),
+            async {
+                let _ = serve_shutdown_rx.await;
+            },
         )
         .await;
     });
@@ -138,6 +142,10 @@ async fn run_http(
     axum::serve(tcp_listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
+
+    // Signal the serve loop to stop and wait for it to finish.
+    let _ = serve_shutdown_tx.send(());
+    let _ = serve_handle.await;
 
     // Clean up discovery file and socket.
     if let Some(path) = &discovery_path {
@@ -172,22 +180,30 @@ async fn run_tui(socket_override: Option<PathBuf>) -> Result<()> {
         }
     }
 
-    // Spawn the R connection serve loop.
+    // Spawn the R connection serve loop with a shutdown channel so it
+    // stops cooperatively when the TUI exits.
+    let (serve_shutdown_tx, serve_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_hub = hub.clone();
     let server_name = "jgdmr".to_owned();
-    tokio::spawn(async move {
+    let serve_handle = tokio::spawn(async move {
         jgd_server::serve::serve(
             listener,
             serve_hub,
             server_name,
             jgd_protocol::Transport::Unix,
-            std::future::pending(),
+            async {
+                let _ = serve_shutdown_rx.await;
+            },
         )
         .await;
     });
 
     // Run the TUI event loop (blocks until the user quits).
     let tui_result = tui::run(hub).await;
+
+    // Signal the serve loop to stop and wait for it to finish.
+    let _ = serve_shutdown_tx.send(());
+    let _ = serve_handle.await;
 
     // Clean up discovery file and socket regardless of TUI exit status.
     // Without this, an error exit would leave a stale discovery file that
