@@ -37,6 +37,9 @@ pub async fn run(hub: HubHandle) -> Result<()> {
         if ws.columns > 0 && ws.rows > 0 && ws.width > 0 && ws.height > 0 {
             let fw = (ws.width + ws.columns - 1) / ws.columns;
             let fh = (ws.height + ws.rows - 1) / ws.rows;
+            // TODO: from_fontsize is deprecated since ratatui-image 9.0 with
+            // no replacement that allows overriding font_size while keeping
+            // the queried protocol.  Propose set_font_size() upstream.
             #[allow(deprecated)]
             let mut p = Picker::from_fontsize((fw, fh));
             p.set_protocol_type(queried_protocol);

@@ -281,6 +281,7 @@ impl App {
 
         // Write debug dimensions to a file (tracing goes to stderr which
         // conflicts with the TUI's alternate screen).
+        #[cfg(debug_assertions)]
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
