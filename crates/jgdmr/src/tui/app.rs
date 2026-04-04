@@ -186,15 +186,7 @@ impl App {
             return Ok(());
         };
 
-        let (pixel_w, pixel_h) = self.render_pixel_size();
-        let (render_w, render_h) =
-            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
-        let renderer = RasterRenderer {
-            output_width: Some(render_w),
-            output_height: Some(render_h),
-        };
-        let png_bytes = renderer.render(&plot).map_err(|e| anyhow::anyhow!("{e}"))?;
-
+        let png_bytes = self.render_plot_to_png(&plot)?;
         let path = self.default_save_path();
         std::fs::write(&path, &png_bytes)?;
         self.status = Some(format!("Saved to {}", path.display()));
@@ -244,6 +236,18 @@ impl App {
         Ok(())
     }
 
+    /// Render a plot to PNG at the appropriate resolution for this terminal.
+    fn render_plot_to_png(&self, plot: &jgd_protocol::Plot) -> Result<Vec<u8>> {
+        let (pixel_w, pixel_h) = self.render_pixel_size();
+        let (render_w, render_h) =
+            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
+        let renderer = RasterRenderer {
+            output_width: Some(render_w),
+            output_height: Some(render_h),
+        };
+        renderer.render(plot).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     /// Fetch the current plot from Hub and render it to an image for display.
     pub async fn refresh_image(&mut self) -> Result<()> {
         let Some(session_id) = self.active_session_id() else {
@@ -261,15 +265,7 @@ impl App {
             return Ok(());
         };
 
-        let (pixel_w, pixel_h) = self.render_pixel_size();
-        let (render_w, render_h) =
-            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
-        let renderer = RasterRenderer {
-            output_width: Some(render_w),
-            output_height: Some(render_h),
-        };
-        let png_bytes = renderer.render(&plot).map_err(|e| anyhow::anyhow!("{e}"))?;
-
+        let png_bytes = self.render_plot_to_png(&plot)?;
         let dyn_image = ImageReader::new(Cursor::new(png_bytes))
             .with_guessed_format()?
             .decode()?;

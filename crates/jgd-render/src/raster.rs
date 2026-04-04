@@ -713,36 +713,30 @@ mod tests {
             },
         };
         let png = RasterRenderer::default().render(&plot).unwrap();
-        std::fs::write("/tmp/jgd_text_test.png", &png).unwrap();
-        eprintln!("Wrote /tmp/jgd_text_test.png");
 
         // Verify text pixels are present: scan for non-white pixels in the
         // "speed" label area (around y=540-560, x=340-430).
         let pm = Pixmap::decode_png(&png).unwrap();
         let mut text_pixels = 0u32;
-        for py in 530..570 {
-            for px in 300..470 {
-                let pixel = pm.pixel(px, py).unwrap();
-                if pixel.red() < 200 || pixel.green() < 200 || pixel.blue() < 200 {
-                    text_pixels += 1;
-                }
-            }
-        }
-        eprintln!("Text pixels in 'speed' area: {text_pixels}");
-        assert!(text_pixels > 50, "expected visible text pixels for 'speed' label, got {text_pixels}");
-
-        // Measure the "speed" label bounding box to verify glyph spacing.
         let mut speed_min_x = u32::MAX;
         let mut speed_max_x = 0u32;
         for py in 520..576 {
             for px in 300..470 {
                 let pixel = pm.pixel(px, py).unwrap();
                 if pixel.red() < 200 && pixel.alpha() > 128 {
+                    text_pixels += 1;
                     speed_min_x = speed_min_x.min(px);
                     speed_max_x = speed_max_x.max(px);
                 }
             }
         }
+        assert!(text_pixels > 50, "expected visible text pixels for 'speed' label, got {text_pixels}");
+
+        // Verify glyphs are properly spaced (not all overlapping).
+        assert!(
+            speed_max_x >= speed_min_x,
+            "no dark pixels found for bounding-box measurement"
+        );
         let speed_width = speed_max_x - speed_min_x + 1;
         assert!(
             speed_width > 30,
