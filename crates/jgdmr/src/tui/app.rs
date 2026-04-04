@@ -421,13 +421,26 @@ impl App {
     ///
     /// Uses the actual window pixel size (not the ceil-rounded render size)
     /// so R lays out the plot to fit the visible terminal area.
+    ///
+    /// When a specific plot is being viewed (i.e. a session is active and has
+    /// plots), the message includes `plot_index` and `session_id` so the
+    /// server re-renders that particular plot at the new aspect ratio — not
+    /// just the latest display list.
     fn send_resize(&self, session_id: Option<String>) {
         let (w, h) = self.window_pixel_size();
+        let (plot_index, resolved_session_id) = if self.plot_count > 0 {
+            (
+                Some(self.current_plot_index as u32),
+                session_id.or_else(|| self.active_session_id().map(String::from)),
+            )
+        } else {
+            (None, session_id)
+        };
         self.hub.client_resize(ResizeMessage {
             width: w as f64,
             height: h as f64,
-            plot_index: None,
-            session_id,
+            plot_index,
+            session_id: resolved_session_id,
         });
     }
 
