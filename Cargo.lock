@@ -1152,6 +1152,7 @@ dependencies = [
  "jgd-protocol",
  "jgd-render",
  "jgd-server",
+ "libc",
  "ratatui",
  "ratatui-image",
  "serde",

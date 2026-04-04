@@ -105,6 +105,44 @@ pub enum Listener {
 }
 
 impl Listener {
+    /// Bind a listener from a parsed [`jgd_protocol::SocketAddr`].
+    ///
+    /// This is the preferred entry point.  TCP requires the `tcp` feature.
+    pub async fn bind(addr: &jgd_protocol::SocketAddr) -> std::io::Result<Self> {
+        match addr {
+            #[cfg(unix)]
+            jgd_protocol::SocketAddr::Unix(path) => Self::bind_unix(path),
+            jgd_protocol::SocketAddr::Npipe(name) => {
+                #[cfg(windows)]
+                {
+                    Self::bind_named_pipe(name)
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = name;
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "npipe:// is only supported on Windows",
+                    ))
+                }
+            }
+            jgd_protocol::SocketAddr::Tcp(host_port) => {
+                #[cfg(feature = "tcp")]
+                {
+                    Self::bind_tcp(host_port).await
+                }
+                #[cfg(not(feature = "tcp"))]
+                {
+                    let _ = host_port;
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "TCP support requires the `tcp` feature",
+                    ))
+                }
+            }
+        }
+    }
+
     /// Bind a Unix domain socket listener.
     ///
     /// Removes a stale socket file if one exists at the given path.

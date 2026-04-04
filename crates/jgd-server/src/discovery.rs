@@ -129,6 +129,21 @@ pub fn default_socket_path() -> PathBuf {
     socket_path_in(cache_dir())
 }
 
+/// Generate a default [`jgd_protocol::SocketAddr`] for R connections.
+pub fn default_socket_addr() -> jgd_protocol::SocketAddr {
+    let path = default_socket_path();
+
+    #[cfg(unix)]
+    {
+        jgd_protocol::SocketAddr::Unix(path)
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, default_socket_path returns \\.\pipe\jgd-<pid>.
+        jgd_protocol::SocketAddr::Npipe(path.to_string_lossy().into_owned())
+    }
+}
+
 /// Inner helper: compute socket path given an optional cache root.
 ///
 /// Separated from [`default_socket_path`] so tests can pass a temp dir
