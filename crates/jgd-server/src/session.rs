@@ -153,7 +153,7 @@ mod tests {
                 |msg| async move {
                     match msg {
                         Message::MetricsRequest(req) => {
-                            let resp = jgd_font_metrics::compute_metrics(&req);
+                            let resp = jgd_font_metrics::compute_metrics(&req, None);
                             Some(Message::MetricsResponse(resp))
                         }
                         _ => None,

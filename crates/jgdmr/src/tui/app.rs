@@ -34,10 +34,14 @@ pub struct App {
     pub halfblock_mode: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
+    /// Terminal size in character cells (cols, rows).
+    pub terminal_size: (u16, u16),
 }
 
 impl App {
     pub fn new(hub: HubHandle, picker: Picker) -> Self {
+        let terminal_size =
+            crossterm::terminal::size().unwrap_or((80, 24));
         Self {
             hub,
             sessions: Vec::new(),
@@ -50,6 +54,7 @@ impl App {
             status: None,
             halfblock_mode: false,
             should_quit: false,
+            terminal_size,
         }
     }
 
@@ -107,11 +112,24 @@ impl App {
     }
 
     /// Handle terminal resize.
-    pub async fn handle_resize(&mut self, _width: u16, _height: u16) -> Result<()> {
+    pub async fn handle_resize(&mut self, width: u16, height: u16) -> Result<()> {
+        self.terminal_size = (width, height);
         // Invalidate the cached image so it gets re-rendered at the new size.
         self.image_state = None;
         self.refresh_image().await?;
         Ok(())
+    }
+
+    /// Compute the pixel dimensions for rendering based on terminal size and font metrics.
+    fn render_pixel_size(&self) -> (u32, u32) {
+        let (cols, rows) = self.terminal_size;
+        let (fw, fh) = self.picker.font_size();
+        // Reserve 1 row for the status bar.
+        let usable_rows = rows.saturating_sub(1);
+        let w = (cols as u32) * (fw as u32);
+        let h = (usable_rows as u32) * (fh as u32);
+        // Ensure minimum size.
+        (w.max(64), h.max(64))
     }
 
     async fn prev_plot(&mut self) -> Result<()> {
@@ -168,9 +186,12 @@ impl App {
             return Ok(());
         };
 
+        let (pixel_w, pixel_h) = self.render_pixel_size();
+        let (render_w, render_h) =
+            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
         let renderer = RasterRenderer {
-            output_width: Some(plot.device.width as u32),
-            output_height: Some(plot.device.height as u32),
+            output_width: Some(render_w),
+            output_height: Some(render_h),
         };
         let png_bytes = renderer.render(&plot).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -240,9 +261,12 @@ impl App {
             return Ok(());
         };
 
+        let (pixel_w, pixel_h) = self.render_pixel_size();
+        let (render_w, render_h) =
+            fit_uniform(plot.device.width, plot.device.height, pixel_w, pixel_h);
         let renderer = RasterRenderer {
-            output_width: Some(plot.device.width as u32),
-            output_height: Some(plot.device.height as u32),
+            output_width: Some(render_w),
+            output_height: Some(render_h),
         };
         let png_bytes = renderer.render(&plot).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -285,6 +309,18 @@ impl App {
             .replace(['/', '\\', ':'], "_");
         PathBuf::from(format!("{session}_{}.png", self.current_plot_index + 1))
     }
+}
+
+/// Compute the largest output size that fits within `max_w × max_h` while
+/// preserving the aspect ratio of `dev_w × dev_h` (uniform scaling).
+fn fit_uniform(dev_w: f64, dev_h: f64, max_w: u32, max_h: u32) -> (u32, u32) {
+    if dev_w <= 0.0 || dev_h <= 0.0 || max_w == 0 || max_h == 0 {
+        return (max_w.max(1), max_h.max(1));
+    }
+    let scale = f64::min(max_w as f64 / dev_w, max_h as f64 / dev_h);
+    let w = (dev_w * scale).round() as u32;
+    let h = (dev_h * scale).round() as u32;
+    (w.max(1), h.max(1))
 }
 
 #[cfg(test)]

@@ -28,12 +28,20 @@ use skrifa::{GlyphId, MetadataProvider};
 static CTX: LazyLock<Mutex<(FontContext, LayoutContext<[u8; 4]>)>> =
     LazyLock::new(|| Mutex::new((FontContext::new(), LayoutContext::new())));
 
+/// Default DPI matching the jgd R device default.
+const DEFAULT_DPI: f64 = 96.0;
+
 /// Compute font metrics for a [`MetricsRequest`] and return a [`MetricsResponse`].
-pub fn compute_metrics(req: &MetricsRequest) -> MetricsResponse {
+///
+/// `dpi` should match the R graphics device DPI (default 96).
+/// R sends font size in points; metrics must be returned in device units
+/// (pixels at the given DPI), so we scale by `dpi / 72`.
+pub fn compute_metrics(req: &MetricsRequest, dpi: Option<f64>) -> MetricsResponse {
+    let dpi = dpi.unwrap_or(DEFAULT_DPI);
     match req.kind {
         MetricsKind::StrWidth => {
             let text = req.str.as_deref().unwrap_or("");
-            let width = str_width(text, &req.gc.font);
+            let width = str_width(text, &req.gc.font, dpi);
             MetricsResponse {
                 id: req.id,
                 width,
@@ -43,7 +51,7 @@ pub fn compute_metrics(req: &MetricsRequest) -> MetricsResponse {
         }
         MetricsKind::MetricInfo => {
             let c = req.c.and_then(char::from_u32).unwrap_or('\0');
-            let metric = char_metric(c, &req.gc.font);
+            let metric = char_metric(c, &req.gc.font, dpi);
             MetricsResponse {
                 id: req.id,
                 width: metric.width,
@@ -61,14 +69,32 @@ struct TextMetric {
     width: f64,
 }
 
-/// Compute the width of a text string in device units (pixels).
-fn str_width(text: &str, font: &ProtocolFontContext) -> f64 {
-    let layout = build_layout(text, font);
-    layout.width() as f64
+/// Compute the width of a text string in device units (pixels at given DPI).
+///
+/// Uses the sum of glyph advances rather than `layout.width()` because
+/// parley trims trailing whitespace from reported width.
+fn str_width(text: &str, font: &ProtocolFontContext, dpi: f64) -> f64 {
+    let layout = build_layout(text, font, dpi);
+    total_advance(&layout) as f64
+}
+
+/// Sum all glyph advances in a layout (not trimmed like `layout.width()`).
+fn total_advance(layout: &parley::Layout<[u8; 4]>) -> f32 {
+    let mut total = 0.0f32;
+    for line in layout.lines() {
+        for item in line.items() {
+            if let PositionedLayoutItem::GlyphRun(run) = item {
+                for glyph in run.glyphs() {
+                    total += glyph.advance;
+                }
+            }
+        }
+    }
+    total
 }
 
 /// Compute ascent, descent, and width for a single character.
-fn char_metric(c: char, font: &ProtocolFontContext) -> TextMetric {
+fn char_metric(c: char, font: &ProtocolFontContext, dpi: f64) -> TextMetric {
     if c == '\0' {
         return TextMetric {
             ascent: 0.0,
@@ -78,7 +104,7 @@ fn char_metric(c: char, font: &ProtocolFontContext) -> TextMetric {
     }
 
     let text = c.to_string();
-    let layout = build_layout(&text, font);
+    let layout = build_layout(&text, font, dpi);
 
     match layout.lines().next() {
         Some(line) => {
@@ -86,7 +112,7 @@ fn char_metric(c: char, font: &ProtocolFontContext) -> TextMetric {
             TextMetric {
                 ascent: metrics.ascent as f64,
                 descent: metrics.descent as f64,
-                width: layout.width() as f64,
+                width: total_advance(&layout) as f64,
             }
         }
         None => TextMetric {
@@ -98,15 +124,20 @@ fn char_metric(c: char, font: &ProtocolFontContext) -> TextMetric {
 }
 
 /// Build a parley layout for the given text and font parameters.
-fn build_layout(text: &str, font: &ProtocolFontContext) -> parley::Layout<[u8; 4]> {
+///
+/// `dpi` is the R device DPI.  R sends font size in points (1/72 inch);
+/// parley needs the size in device pixels, so we scale by `dpi / 72`.
+fn build_layout(text: &str, font: &ProtocolFontContext, dpi: f64) -> parley::Layout<[u8; 4]> {
     let mut ctx = CTX.lock().unwrap();
     let (ref mut font_ctx, ref mut layout_ctx) = *ctx;
     let (weight, style) = fontface_to_weight_and_style(font.face);
 
     let family = map_font_family(&font.family);
 
+    // Convert font size from points to device pixels.
+    let font_size_px = font.size as f32 * (dpi as f32 / 72.0);
     let mut builder = layout_ctx.ranged_builder(font_ctx, text, 1.0, false);
-    builder.push_default(StyleProperty::FontSize(font.size as f32));
+    builder.push_default(StyleProperty::FontSize(font_size_px));
     builder.push_default(LineHeight::FontSizeRelative(font.lineheight as f32));
     builder.push_default(family);
     builder.push_default(StyleProperty::FontWeight(weight));
@@ -177,8 +208,10 @@ pub struct GlyphPath {
 ///
 /// Each glyph's `x`/`y` is relative to the text origin. The caller applies
 /// the final positioning transform (including rotation and horizontal adjustment).
-pub fn text_to_paths(text: &str, font: &ProtocolFontContext) -> Vec<GlyphPath> {
-    let layout = build_layout(text, font);
+///
+/// `dpi` is the R device DPI (default 96); font size is scaled by `dpi / 72`.
+pub fn text_to_paths(text: &str, font: &ProtocolFontContext, dpi: f64) -> Vec<GlyphPath> {
+    let layout = build_layout(text, font, dpi);
     let mut result = Vec::new();
 
     for line in layout.lines() {
@@ -208,9 +241,12 @@ pub fn text_to_paths(text: &str, font: &ProtocolFontContext) -> Vec<GlyphPath> {
             let run_offset = glyph_run.offset();
             let size = Size::new(font_size);
 
+            let mut cursor_x = 0.0f32;
             for glyph in glyph_run.glyphs() {
                 let glyph_id = GlyphId::from(glyph.id);
-                let gx = run_offset + glyph.x;
+                // glyph.x is a per-glyph offset (kerning etc.), not cumulative.
+                // The cumulative position comes from advancing the cursor.
+                let gx = run_offset + cursor_x + glyph.x;
                 let gy = glyph.y;
 
                 let path = outlines.get(glyph_id).and_then(|outline| {
@@ -227,6 +263,8 @@ pub fn text_to_paths(text: &str, font: &ProtocolFontContext) -> Vec<GlyphPath> {
                     advance: glyph.advance,
                     path,
                 });
+
+                cursor_x += glyph.advance;
             }
         }
     }
@@ -292,6 +330,17 @@ mod tests {
     }
 
     #[test]
+    fn space_char_has_positive_width() {
+        let gc = make_gc();
+        let m = char_metric(' ', &gc.font, 96.0);
+        assert!(
+            m.width > 0.0,
+            "space width should be positive, got {}",
+            m.width
+        );
+    }
+
+    #[test]
     fn str_width_returns_positive_for_nonempty() {
         let req = MetricsRequest {
             id: 1,
@@ -300,7 +349,7 @@ mod tests {
             c: None,
             gc: make_gc(),
         };
-        let resp = compute_metrics(&req);
+        let resp = compute_metrics(&req, None);
         assert_eq!(resp.id, 1);
         assert!(
             resp.width > 0.0,
@@ -318,7 +367,7 @@ mod tests {
             c: None,
             gc: make_gc(),
         };
-        let resp = compute_metrics(&req);
+        let resp = compute_metrics(&req, None);
         assert_eq!(resp.width, 0.0);
     }
 
@@ -331,7 +380,7 @@ mod tests {
             c: Some(b'M' as u32),
             gc: make_gc(),
         };
-        let resp = compute_metrics(&req);
+        let resp = compute_metrics(&req, None);
         assert_eq!(resp.id, 3);
         assert!(
             resp.ascent > 0.0,
@@ -354,7 +403,7 @@ mod tests {
             c: Some(0),
             gc: make_gc(),
         };
-        let resp = compute_metrics(&req);
+        let resp = compute_metrics(&req, None);
         assert_eq!(resp.width, 0.0);
         assert_eq!(resp.ascent, 0.0);
         assert_eq!(resp.descent, 0.0);
@@ -368,8 +417,8 @@ mod tests {
         gc_bold.font.face = 2;
 
         let text = "Hello, World!";
-        let w_plain = str_width(text, &gc_plain.font);
-        let w_bold = str_width(text, &gc_bold.font);
+        let w_plain = str_width(text, &gc_plain.font, 96.0);
+        let w_bold = str_width(text, &gc_bold.font, 96.0);
         assert!(
             w_bold >= w_plain,
             "bold ({w_bold}) should be >= plain ({w_plain})"
@@ -379,7 +428,7 @@ mod tests {
     #[test]
     fn text_to_paths_returns_glyphs() {
         let gc = make_gc();
-        let paths = text_to_paths("Hello", &gc.font);
+        let paths = text_to_paths("Hello", &gc.font, 96.0);
         assert!(
             !paths.is_empty(),
             "should return glyph paths for non-empty text"
@@ -393,7 +442,7 @@ mod tests {
     #[test]
     fn text_to_paths_empty_string() {
         let gc = make_gc();
-        let paths = text_to_paths("", &gc.font);
+        let paths = text_to_paths("", &gc.font, 96.0);
         assert!(paths.is_empty());
     }
 
@@ -405,8 +454,8 @@ mod tests {
         gc_large.font.size = 20.0;
 
         let text = "Test";
-        let w_small = str_width(text, &gc_small.font);
-        let w_large = str_width(text, &gc_large.font);
+        let w_small = str_width(text, &gc_small.font, 96.0);
+        let w_large = str_width(text, &gc_large.font, 96.0);
         assert!(
             w_large > w_small,
             "20pt ({w_large}) should be wider than 10pt ({w_small})"

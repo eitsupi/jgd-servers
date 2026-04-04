@@ -131,6 +131,8 @@ struct SessionState {
     last_resize_h: f64,
     last_resize_had_plot_index: bool,
     remapped: bool,
+    /// DPI from the R device (set from the first frame's DeviceInfo).
+    dpi: Option<f64>,
 }
 
 struct HubState {
@@ -193,6 +195,7 @@ async fn run(
                         last_resize_h: 0.0,
                         last_resize_had_plot_index: false,
                         remapped: false,
+                        dpi: None,
                     },
                 );
             }
@@ -316,7 +319,11 @@ impl HubState {
             Message::Frame(frame) => self.handle_frame(conn_id, frame),
             Message::MetricsRequest(req) => {
                 // Compute metrics server-side via parley — no browser round-trip.
-                let resp = jgd_font_metrics::compute_metrics(&req);
+                let dpi = self
+                    .sessions
+                    .get(&conn_id)
+                    .and_then(|s| s.dpi);
+                let resp = jgd_font_metrics::compute_metrics(&req, dpi);
                 if let Some(session) = self.sessions.get(&conn_id) {
                     let _ = session.tx.send(Message::MetricsResponse(resp));
                 }
@@ -338,6 +345,13 @@ impl HubState {
 
     /// Handle a frame from R: extract session ID, inject/remap, and broadcast.
     fn handle_frame(&mut self, conn_id: ConnId, mut frame: FrameMessage) {
+        // Store DPI from the device info for metrics computation.
+        if let Some(dpi) = frame.plot.device.dpi
+            && let Some(session) = self.sessions.get_mut(&conn_id)
+        {
+            session.dpi = Some(dpi);
+        }
+
         // Extract session ID from the first frame for lazy assignment.
         if let Some(ref session_id) = frame.plot.session_id {
             self.update_session_id(conn_id, session_id.clone());

@@ -37,6 +37,7 @@ impl Renderer for RasterRenderer {
     fn render(&self, plot: &Plot) -> Result<Vec<u8>, RasterError> {
         let dev_w = plot.device.width;
         let dev_h = plot.device.height;
+        let dpi = plot.device.dpi.unwrap_or(96.0);
         let out_w = self.output_width.unwrap_or(dev_w as u32);
         let out_h = self.output_height.unwrap_or(dev_h as u32);
 
@@ -202,6 +203,7 @@ impl Renderer for RasterRenderer {
                         *rot as f32,
                         *hadj as f32,
                         gc,
+                        dpi,
                         base_transform,
                         clip_stack.last(),
                     );
@@ -374,6 +376,7 @@ fn render_text(
     rot: f32,
     hadj: f32,
     gc: &GraphicsContext,
+    dpi: f64,
     base_transform: Transform,
     mask: Option<&Mask>,
 ) {
@@ -389,7 +392,7 @@ fn render_text(
     paint.set_color(color);
     paint.anti_alias = true;
 
-    let glyphs = text_to_paths(text, &gc.font);
+    let glyphs = text_to_paths(text, &gc.font, dpi);
 
     // Compute total text width for horizontal adjustment.
     let total_width: f32 = glyphs.iter().map(|g| g.advance).sum();
@@ -535,7 +538,7 @@ mod tests {
         DeviceInfo {
             width: w,
             height: h,
-            dpi: None,
+            dpi: Some(96.0),
             bg: None,
         }
     }
@@ -668,5 +671,82 @@ mod tests {
         // Pixel at (75, 75) should be transparent (outside clip).
         let px = pm.pixel(75, 75).unwrap();
         assert_eq!(px.alpha(), 0, "pixel outside clip should be transparent");
+    }
+
+    #[test]
+    fn text_rendering_dpi_check() {
+        let gc = GraphicsContext {
+            col: Some("rgba(0,0,0,1)".into()),
+            fill: Some("rgba(255,255,255,1)".into()),
+            font: jgd_protocol::gc::FontContext {
+                family: "sans".into(),
+                face: 1,
+                size: 12.0,
+                lineheight: 1.2,
+            },
+            lwd: 1.0,
+            ..Default::default()
+        };
+        let plot = Plot {
+            session_id: None,
+            ops: vec![
+                DrawingOp::Rect {
+                    x0: 0.0, y0: 0.0, x1: 768.0, y1: 576.0,
+                    gc: GraphicsContext {
+                        fill: Some("rgba(255,255,255,1)".into()),
+                        ..Default::default()
+                    },
+                },
+                DrawingOp::Text {
+                    x: 384.0, y: 550.0, r#str: "speed".into(),
+                    rot: 0.0, hadj: 0.5, gc: gc.clone(),
+                },
+                DrawingOp::Text {
+                    x: 30.0, y: 288.0, r#str: "dist".into(),
+                    rot: 90.0, hadj: 0.5, gc: gc.clone(),
+                },
+            ],
+            device: DeviceInfo {
+                width: 768.0, height: 576.0,
+                dpi: Some(96.0),
+                bg: Some("rgba(255,255,255,1)".into()),
+            },
+        };
+        let png = RasterRenderer::default().render(&plot).unwrap();
+        std::fs::write("/tmp/jgd_text_test.png", &png).unwrap();
+        eprintln!("Wrote /tmp/jgd_text_test.png");
+
+        // Verify text pixels are present: scan for non-white pixels in the
+        // "speed" label area (around y=540-560, x=340-430).
+        let pm = Pixmap::decode_png(&png).unwrap();
+        let mut text_pixels = 0u32;
+        for py in 530..570 {
+            for px in 300..470 {
+                let pixel = pm.pixel(px, py).unwrap();
+                if pixel.red() < 200 || pixel.green() < 200 || pixel.blue() < 200 {
+                    text_pixels += 1;
+                }
+            }
+        }
+        eprintln!("Text pixels in 'speed' area: {text_pixels}");
+        assert!(text_pixels > 50, "expected visible text pixels for 'speed' label, got {text_pixels}");
+
+        // Measure the "speed" label bounding box to verify glyph spacing.
+        let mut speed_min_x = u32::MAX;
+        let mut speed_max_x = 0u32;
+        for py in 520..576 {
+            for px in 300..470 {
+                let pixel = pm.pixel(px, py).unwrap();
+                if pixel.red() < 200 && pixel.alpha() > 128 {
+                    speed_min_x = speed_min_x.min(px);
+                    speed_max_x = speed_max_x.max(px);
+                }
+            }
+        }
+        let speed_width = speed_max_x - speed_min_x + 1;
+        assert!(
+            speed_width > 30,
+            "'speed' label width should be >30px (glyphs properly spaced), got {speed_width}px"
+        );
     }
 }
