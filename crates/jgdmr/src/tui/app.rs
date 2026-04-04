@@ -163,8 +163,14 @@ impl App {
         // Invalidate all cached images — pixel dimensions changed.
         self.image_cache.clear();
         self.image_state = None;
-        // Notify R sessions so they replay at the new dimensions.
+        // Broadcast resize so every R session updates its device size and
+        // replays the current display list (= latest plot).
         self.send_resize(None);
+        // If viewing a past plot, also send a targeted resize so R replays
+        // *that* historical plot at the new aspect ratio.
+        if self.plot_count > 0 && !self.following_latest {
+            self.send_targeted_resize();
+        }
         self.refresh_image().await?;
         Ok(())
     }
@@ -417,30 +423,34 @@ impl App {
         self.render_pixel_size()
     }
 
-    /// Send a resize message to R so it replays at the current terminal dimensions.
+    /// Broadcast a resize to all R sessions so they update their device size.
     ///
     /// Uses the actual window pixel size (not the ceil-rounded render size)
-    /// so R lays out the plot to fit the visible terminal area.
-    ///
-    /// When a specific plot is being viewed (i.e. a session is active and has
-    /// plots), the message includes `plot_index` and `session_id` so the
-    /// server re-renders that particular plot at the new aspect ratio — not
-    /// just the latest display list.
+    /// so R lays out the plot to fit the visible terminal area.  Sends
+    /// `plot_index: None` which causes each session to replay its current
+    /// display list (i.e. the latest plot).
     fn send_resize(&self, session_id: Option<String>) {
         let (w, h) = self.window_pixel_size();
-        let (plot_index, resolved_session_id) = if self.plot_count > 0 {
-            (
-                Some(self.current_plot_index as u32),
-                session_id.or_else(|| self.active_session_id().map(String::from)),
-            )
-        } else {
-            (None, session_id)
-        };
         self.hub.client_resize(ResizeMessage {
             width: w as f64,
             height: h as f64,
-            plot_index,
-            session_id: resolved_session_id,
+            plot_index: None,
+            session_id,
+        });
+    }
+
+    /// Send a targeted resize for the currently viewed plot so R replays that
+    /// specific historical plot at the current terminal dimensions.
+    fn send_targeted_resize(&self) {
+        let Some(session_id) = self.active_session_id().map(String::from) else {
+            return;
+        };
+        let (w, h) = self.window_pixel_size();
+        self.hub.client_resize(ResizeMessage {
+            width: w as f64,
+            height: h as f64,
+            plot_index: Some(self.current_plot_index as u32),
+            session_id: Some(session_id),
         });
     }
 
