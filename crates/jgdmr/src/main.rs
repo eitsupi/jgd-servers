@@ -187,13 +187,15 @@ async fn run_tui(socket_override: Option<PathBuf>) -> Result<()> {
     });
 
     // Run the TUI event loop (blocks until the user quits).
-    tui::run(hub).await?;
+    let tui_result = tui::run(hub).await;
 
-    // Clean up discovery file and socket.
+    // Clean up discovery file and socket regardless of TUI exit status.
+    // Without this, an error exit would leave a stale discovery file that
+    // misleads R clients into connecting to a dead server.
     if let Some(path) = &discovery_path {
         let _ = jgd_server::discovery::remove(path);
     }
     let _ = std::fs::remove_file(&socket);
 
-    Ok(())
+    tui_result
 }
