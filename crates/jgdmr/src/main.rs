@@ -198,7 +198,7 @@ async fn run_http(
     let socket_addr = match socket_override {
         Some(s) => jgd_protocol::SocketAddr::parse(s)
             .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr(),
+        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
     };
 
     let hub = jgd_server::hub::spawn();
@@ -286,7 +286,7 @@ async fn run_tui(socket_override: Option<&str>) -> Result<()> {
     let socket_addr = match socket_override {
         Some(s) => jgd_protocol::SocketAddr::parse(s)
             .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr(),
+        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
     };
 
     let hub = jgd_server::hub::spawn();

@@ -16,31 +16,7 @@ pub fn parse_listen_uri(uri: Option<&str>) -> Result<SocketAddr> {
 
 /// Generate a default API socket address (separate from the R connection socket).
 fn default_api_addr() -> SocketAddr {
-    let pid = std::process::id();
-
-    #[cfg(unix)]
-    {
-        let sessions = jgd_server::discovery::cache_dir().map(|d| d.join("sessions"));
-        let path = if let Some(ref sessions) = sessions {
-            use std::os::unix::fs::DirBuilderExt;
-            let mut builder = std::fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            if let Err(e) = builder.create(sessions) {
-                tracing::warn!(?sessions, %e, "failed to create sessions directory");
-            }
-            sessions.join(format!("{pid}-api.sock"))
-        } else {
-            let dir = std::env::temp_dir().join(format!("jgd-{pid}"));
-            std::fs::create_dir_all(&dir).ok();
-            dir.join("api.sock")
-        };
-        SocketAddr::Unix(path)
-    }
-
-    #[cfg(windows)]
-    {
-        SocketAddr::Npipe(format!(r"\\.\pipe\jgd-{pid}-api"))
-    }
+    jgd_server::discovery::default_socket_addr("jgdmr", "-api")
 }
 
 /// Serve an axum [`Router`] on the given address until `shutdown` resolves.

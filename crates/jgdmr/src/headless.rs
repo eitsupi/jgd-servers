@@ -12,7 +12,7 @@ pub async fn run(
 ) -> Result<()> {
     let socket_addr = match socket_override {
         Some(s) => SocketAddr::parse(s).map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr(),
+        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
     };
     let listen_addr = listen::parse_listen_uri(listen_uri)?;
 

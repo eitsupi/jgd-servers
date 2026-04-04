@@ -120,64 +120,115 @@ pub fn remove(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Generate a PID-based Unix socket path for jgd.
+/// Resolve the platform-specific runtime directory for sockets.
 ///
-/// Uses the jgd cache directory with a `sessions/` subdirectory,
-/// falling back to `$TMPDIR/jgd-{pid}/` if the cache dir is unavailable.
-/// On Windows, returns a named pipe path.
-pub fn default_socket_path() -> PathBuf {
-    socket_path_in(cache_dir())
-}
-
-/// Generate a default [`jgd_protocol::SocketAddr`] for R connections.
-pub fn default_socket_addr() -> jgd_protocol::SocketAddr {
-    let path = default_socket_path();
-
+/// On Linux: `$XDG_RUNTIME_DIR/<name>/` (falls back to `$TMPDIR/<name>-<pid>/`)
+/// On macOS: `$TMPDIR/<name>/`
+/// On Windows: not applicable (Named Pipes have no directory)
+///
+/// The returned directory is created with mode 0700 if it does not exist.
+/// Returns `None` if the directory cannot be determined or created.
+pub fn runtime_dir(name: &str) -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        jgd_protocol::SocketAddr::Unix(path)
+        runtime_dir_unix(name)
     }
     #[cfg(windows)]
     {
-        // On Windows, default_socket_path returns \\.\pipe\jgd-<pid>.
-        jgd_protocol::SocketAddr::Npipe(path.to_string_lossy().into_owned())
+        let _ = name;
+        None
     }
 }
 
-/// Inner helper: compute socket path given an optional cache root.
+#[cfg(unix)]
+fn runtime_dir_unix(name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let create_dir_0700 = |dir: &Path| -> std::io::Result<()> {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(dir)
+    };
+
+    // Try XDG_RUNTIME_DIR first (typically /run/user/<uid>/).
+    let candidates: Vec<PathBuf> = {
+        let mut v = Vec::with_capacity(2);
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+            v.push(runtime.join(name));
+        }
+        // Fallback: temp dir with PID to avoid collisions.
+        let pid = std::process::id();
+        v.push(std::env::temp_dir().join(format!("{name}-{pid}")));
+        v
+    };
+
+    for dir in &candidates {
+        match create_dir_0700(dir) {
+            Ok(()) => return Some(dir.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Validate ownership and permissions.
+                if is_dir_safe(dir) {
+                    return Some(dir.clone());
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
+/// Check that a directory is safe for sockets: exists, is a directory,
+/// owned by us, not writable by group/other.
+#[cfg(unix)]
+fn is_dir_safe(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_dir() {
+        return false;
+    }
+    // Must be owned by current user.
+    if meta.uid() != unsafe { libc::getuid() } {
+        return false;
+    }
+    // Must not be writable by group/other.
+    meta.mode() & 0o022 == 0
+}
+
+/// Generate a PID-based socket address for a given program.
 ///
-/// Separated from [`default_socket_path`] so tests can pass a temp dir
-/// instead of touching the real cache directory.
-fn socket_path_in(cache: Option<PathBuf>) -> PathBuf {
+/// On Unix: `$XDG_RUNTIME_DIR/<name>/<pid>[<suffix>].sock`
+/// On Windows: `\\.\pipe\<name>-<pid>[<suffix>]`
+pub fn default_socket_addr(name: &str, suffix: &str) -> jgd_protocol::SocketAddr {
     let pid = std::process::id();
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
-
-        let create_dir_0700 = |dir: &Path| {
-            let mut builder = std::fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            if let Err(e) = builder.create(dir) {
-                tracing::warn!(?dir, %e, "failed to create sessions directory");
-            }
-        };
-
-        if let Some(sessions) = cache.map(|d| d.join("sessions")) {
-            create_dir_0700(&sessions);
-            sessions.join(format!("{pid}.sock"))
+        let dir = runtime_dir(name).unwrap_or_else(|| {
+            let fallback = std::env::temp_dir().join(format!("{name}-{pid}"));
+            std::fs::create_dir_all(&fallback).ok();
+            fallback
+        });
+        let filename = if suffix.is_empty() {
+            format!("{pid}.sock")
         } else {
-            let dir = std::env::temp_dir().join(format!("jgd-{pid}"));
-            create_dir_0700(&dir);
-            dir.join("ipc.sock")
-        }
+            format!("{pid}{suffix}.sock")
+        };
+        jgd_protocol::SocketAddr::Unix(dir.join(filename))
     }
-
     #[cfg(windows)]
     {
-        PathBuf::from(format!(r"\\.\pipe\jgd-{pid}"))
+        let pipe_name = if suffix.is_empty() {
+            format!(r"\\.\pipe\{name}-{pid}")
+        } else {
+            format!(r"\\.\pipe\{name}-{pid}{suffix}")
+        };
+        jgd_protocol::SocketAddr::Npipe(pipe_name)
     }
 }
+
 
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
@@ -353,14 +404,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn socket_path_is_pid_based() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = socket_path_in(Some(tmp.path().to_path_buf()));
+    fn socket_addr_is_pid_based() {
         let pid = std::process::id();
+        let addr = default_socket_addr("testapp", "");
+        let jgd_protocol::SocketAddr::Unix(path) = addr else {
+            panic!("expected Unix socket addr");
+        };
         let name = path.file_name().unwrap().to_string_lossy();
         assert_eq!(name, format!("{pid}.sock"));
-        // Should be under the provided cache dir, not the real one.
-        assert!(path.starts_with(tmp.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_addr_with_suffix() {
+        let pid = std::process::id();
+        let addr = default_socket_addr("testapp", "-api");
+        let jgd_protocol::SocketAddr::Unix(path) = addr else {
+            panic!("expected Unix socket addr");
+        };
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert_eq!(name, format!("{pid}-api.sock"));
     }
 
     #[cfg(unix)]

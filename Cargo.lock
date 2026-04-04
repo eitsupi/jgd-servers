@@ -1129,6 +1129,7 @@ dependencies = [
  "futures-util",
  "jgd-font-metrics",
  "jgd-protocol",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
