@@ -48,6 +48,8 @@ pub struct App {
     /// Terminal size in character cells (cols, rows).
     pub terminal_size: (u16, u16),
     /// Cache of rendered images keyed by (session, plot index, pixel size).
+    /// Unbounded; typical usage stays small (one entry per viewed plot at the
+    /// current terminal size, cleared on resize and new-frame events).
     image_cache: HashMap<ImageCacheKey, DynamicImage>,
 }
 
@@ -107,8 +109,9 @@ impl App {
 
         // Invalidate cached images for the session that received a new frame,
         // since the latest plot may have been updated incrementally.
-        if let Some(sid) = session_id {
-            self.image_cache.retain(|k, _| k.session_id != sid);
+        match session_id {
+            Some(sid) => self.image_cache.retain(|k, _| k.session_id != sid),
+            None => self.image_cache.clear(),
         }
 
         if self.following_latest {
@@ -344,14 +347,16 @@ impl App {
             pixel_h,
         };
 
-        let dyn_image = if let Some(cached) = self.image_cache.get(&cache_key) {
-            cached.clone()
-        } else {
-            let img = self.render_plot_to_image(&plot)?;
-            self.image_cache.insert(cache_key, img.clone());
+        let dyn_image = if let Some(img) = self.image_cache.remove(&cache_key) {
             img
+        } else {
+            self.render_plot_to_image(&plot)?
         };
 
+        // Re-insert into cache, cloning for the protocol.  The clone is
+        // unavoidable since new_resize_protocol takes ownership, but this
+        // is still cheaper than re-rendering from scratch on next visit.
+        self.image_cache.insert(cache_key, dyn_image.clone());
         self.image_state = Some(self.picker.new_resize_protocol(dyn_image));
         self.status = None;
         Ok(())
