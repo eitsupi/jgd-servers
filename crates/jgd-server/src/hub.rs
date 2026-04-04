@@ -389,8 +389,14 @@ impl HubState {
                     plots[last] = frame.plot.clone();
                     last
                 }
+            } else if frame.incremental {
+                // Incremental update — append new ops to the latest entry.
+                let last = plots.len() - 1;
+                plots[last].ops.extend(frame.plot.ops.iter().cloned());
+                plots[last].device = frame.plot.device.clone();
+                last
             } else {
-                // Incremental or normal update — replace the latest entry.
+                // Complete (non-incremental) update — replace the latest entry.
                 let last = plots.len() - 1;
                 plots[last] = frame.plot.clone();
                 last
@@ -816,5 +822,90 @@ mod tests {
             Message::Frame(f) => assert_eq!(f.plot_index, Some(1)),
             other => panic!("expected Frame, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn incremental_frame_appends_ops() {
+        use jgd_protocol::DrawingOp;
+
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // First (complete) frame with one op.
+        let mut f1 = make_frame(Some("r-inc-1"));
+        f1.plot.ops.push(DrawingOp::Clip {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 100.0,
+            y1: 100.0,
+        });
+        hub.r_message(conn, Message::Frame(f1));
+        let _ = sub.recv().await.unwrap();
+
+        // Second (incremental) frame with a different op.
+        let mut f2 = make_frame(Some("r-inc-1"));
+        f2.incremental = true;
+        f2.plot.ops.push(DrawingOp::Clip {
+            x0: 10.0,
+            y0: 10.0,
+            x1: 90.0,
+            y1: 90.0,
+        });
+        hub.r_message(conn, Message::Frame(f2));
+        let _ = sub.recv().await.unwrap();
+
+        // The stored plot should have both ops accumulated.
+        let plot = hub.get_plot("r-inc-1", Some(0)).await.unwrap();
+        assert_eq!(plot.ops.len(), 2, "incremental frame should append ops");
+
+        // Still only one plot entry (not two pages).
+        let plots = hub.get_plots().await;
+        let count = plots.iter().filter(|p| p.session_id == "r-inc-1").count();
+        assert_eq!(count, 1, "incremental frame should not create new page");
+    }
+
+    #[tokio::test]
+    async fn non_incremental_frame_replaces_ops() {
+        use jgd_protocol::DrawingOp;
+
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+
+        // First frame with two ops.
+        let mut f1 = make_frame(Some("r-rep-1"));
+        f1.plot.ops.push(DrawingOp::Clip {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 100.0,
+            y1: 100.0,
+        });
+        f1.plot.ops.push(DrawingOp::Clip {
+            x0: 5.0,
+            y0: 5.0,
+            x1: 95.0,
+            y1: 95.0,
+        });
+        hub.r_message(conn, Message::Frame(f1));
+        let _ = sub.recv().await.unwrap();
+
+        // Second frame (non-incremental) with one op — should replace.
+        let mut f2 = make_frame(Some("r-rep-1"));
+        f2.plot.ops.push(DrawingOp::Clip {
+            x0: 10.0,
+            y0: 10.0,
+            x1: 90.0,
+            y1: 90.0,
+        });
+        hub.r_message(conn, Message::Frame(f2));
+        let _ = sub.recv().await.unwrap();
+
+        let plot = hub.get_plot("r-rep-1", Some(0)).await.unwrap();
+        assert_eq!(
+            plot.ops.len(),
+            1,
+            "non-incremental frame should replace ops"
+        );
     }
 }
