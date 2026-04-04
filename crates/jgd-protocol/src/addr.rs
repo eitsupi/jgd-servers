@@ -42,9 +42,7 @@ impl SocketAddr {
     pub fn parse(s: &str) -> Result<Self, ParseSocketAddrError> {
         if let Some(rest) = s.strip_prefix("unix://") {
             if rest.is_empty() {
-                return Err(ParseSocketAddrError(
-                    "unix:// URI requires a path".into(),
-                ));
+                return Err(ParseSocketAddrError("unix:// URI requires a path".into()));
             }
             Ok(SocketAddr::Unix(PathBuf::from(rest)))
         } else if let Some(rest) = s.strip_prefix("npipe://") {
@@ -59,9 +57,7 @@ impl SocketAddr {
             Ok(SocketAddr::Npipe(pipe_name))
         } else if let Some(rest) = s.strip_prefix("tcp://") {
             if rest.is_empty() {
-                return Err(ParseSocketAddrError(
-                    "tcp:// URI requires host:port".into(),
-                ));
+                return Err(ParseSocketAddrError("tcp:// URI requires host:port".into()));
             }
             Ok(SocketAddr::Tcp(rest.into()))
         } else if s.starts_with('/') || s.starts_with('.') {
@@ -127,10 +123,7 @@ mod tests {
     #[test]
     fn parse_npipe() {
         let addr = SocketAddr::parse("npipe:////./pipe/jgd-1234").unwrap();
-        assert_eq!(
-            addr,
-            SocketAddr::Npipe(r"\\.\pipe\jgd-1234".into())
-        );
+        assert_eq!(addr, SocketAddr::Npipe(r"\\.\pipe\jgd-1234".into()));
         assert_eq!(addr.transport(), Transport::Npipe);
     }
 

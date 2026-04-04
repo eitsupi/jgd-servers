@@ -319,10 +319,7 @@ impl HubState {
             Message::Frame(frame) => self.handle_frame(conn_id, frame),
             Message::MetricsRequest(req) => {
                 // Compute metrics server-side via parley — no browser round-trip.
-                let dpi = self
-                    .sessions
-                    .get(&conn_id)
-                    .and_then(|s| s.dpi);
+                let dpi = self.sessions.get(&conn_id).and_then(|s| s.dpi);
                 let resp = jgd_font_metrics::compute_metrics(&req, dpi);
                 if let Some(session) = self.sessions.get(&conn_id) {
                     let _ = session.tx.send(Message::MetricsResponse(resp));

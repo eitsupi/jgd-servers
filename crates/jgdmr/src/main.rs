@@ -196,9 +196,8 @@ async fn run_http(
     headless: bool,
 ) -> Result<()> {
     let socket_addr = match socket_override {
-        Some(s) => jgd_protocol::SocketAddr::parse(s)
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
+        Some(s) => jgd_protocol::SocketAddr::parse(s).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => jgd_server::discovery::default_socket_addr("jgdmr", "")?,
     };
 
     let hub = jgd_server::hub::spawn();
@@ -246,15 +245,9 @@ async fn run_http(
     let server_name = "jgdmr".to_owned();
     let transport = socket_addr.transport();
     let serve_handle = tokio::spawn(async move {
-        jgd_server::serve::serve(
-            listener,
-            serve_hub,
-            server_name,
-            transport,
-            async {
-                let _ = serve_shutdown_rx.await;
-            },
-        )
+        jgd_server::serve::serve(listener, serve_hub, server_name, transport, async {
+            let _ = serve_shutdown_rx.await;
+        })
         .await;
     });
 
@@ -284,9 +277,8 @@ async fn run_http(
 
 async fn run_tui(socket_override: Option<&str>) -> Result<()> {
     let socket_addr = match socket_override {
-        Some(s) => jgd_protocol::SocketAddr::parse(s)
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
+        Some(s) => jgd_protocol::SocketAddr::parse(s).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => jgd_server::discovery::default_socket_addr("jgdmr", "")?,
     };
 
     let hub = jgd_server::hub::spawn();
@@ -317,15 +309,9 @@ async fn run_tui(socket_override: Option<&str>) -> Result<()> {
     let server_name = "jgdmr".to_owned();
     let transport = socket_addr.transport();
     let serve_handle = tokio::spawn(async move {
-        jgd_server::serve::serve(
-            listener,
-            serve_hub,
-            server_name,
-            transport,
-            async {
-                let _ = serve_shutdown_rx.await;
-            },
-        )
+        jgd_server::serve::serve(listener, serve_hub, server_name, transport, async {
+            let _ = serve_shutdown_rx.await;
+        })
         .await;
     });
 

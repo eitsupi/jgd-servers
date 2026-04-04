@@ -704,23 +704,35 @@ mod tests {
             session_id: None,
             ops: vec![
                 DrawingOp::Rect {
-                    x0: 0.0, y0: 0.0, x1: 768.0, y1: 576.0,
+                    x0: 0.0,
+                    y0: 0.0,
+                    x1: 768.0,
+                    y1: 576.0,
                     gc: GraphicsContext {
                         fill: Some("rgba(255,255,255,1)".into()),
                         ..Default::default()
                     },
                 },
                 DrawingOp::Text {
-                    x: 384.0, y: 550.0, r#str: "speed".into(),
-                    rot: 0.0, hadj: 0.5, gc: gc.clone(),
+                    x: 384.0,
+                    y: 550.0,
+                    r#str: "speed".into(),
+                    rot: 0.0,
+                    hadj: 0.5,
+                    gc: gc.clone(),
                 },
                 DrawingOp::Text {
-                    x: 30.0, y: 288.0, r#str: "dist".into(),
-                    rot: 90.0, hadj: 0.5, gc: gc.clone(),
+                    x: 30.0,
+                    y: 288.0,
+                    r#str: "dist".into(),
+                    rot: 90.0,
+                    hadj: 0.5,
+                    gc: gc.clone(),
                 },
             ],
             device: DeviceInfo {
-                width: 768.0, height: 576.0,
+                width: 768.0,
+                height: 576.0,
                 dpi: Some(96.0),
                 bg: Some("rgba(255,255,255,1)".into()),
             },
@@ -743,7 +755,10 @@ mod tests {
                 }
             }
         }
-        assert!(text_pixels > 50, "expected visible text pixels for 'speed' label, got {text_pixels}");
+        assert!(
+            text_pixels > 50,
+            "expected visible text pixels for 'speed' label, got {text_pixels}"
+        );
 
         // Verify glyphs are properly spaced (not all overlapping).
         assert!(

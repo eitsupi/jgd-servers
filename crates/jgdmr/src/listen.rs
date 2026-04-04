@@ -10,13 +10,13 @@ use jgd_protocol::SocketAddr;
 pub fn parse_listen_uri(uri: Option<&str>) -> Result<SocketAddr> {
     match uri {
         Some(s) => SocketAddr::parse(s).map_err(|e| anyhow::anyhow!("{e}")),
-        None => Ok(default_api_addr()),
+        None => default_api_addr(),
     }
 }
 
 /// Generate a default API socket address (separate from the R connection socket).
-fn default_api_addr() -> SocketAddr {
-    jgd_server::discovery::default_socket_addr("jgdmr", "-api")
+fn default_api_addr() -> Result<SocketAddr> {
+    Ok(jgd_server::discovery::default_socket_addr("jgdmr", "-api")?)
 }
 
 /// Serve an axum [`Router`] on the given address until `shutdown` resolves.
@@ -30,8 +30,9 @@ pub async fn serve(
         SocketAddr::Unix(path) => {
             // Remove stale socket if it exists.
             if path.exists() {
-                std::fs::remove_file(path)
-                    .with_context(|| format!("failed to remove stale socket: {}", path.display()))?;
+                std::fs::remove_file(path).with_context(|| {
+                    format!("failed to remove stale socket: {}", path.display())
+                })?;
             }
             let listener = tokio::net::UnixListener::bind(path)
                 .with_context(|| format!("failed to bind Unix socket: {}", path.display()))?;

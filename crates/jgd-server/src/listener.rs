@@ -112,6 +112,11 @@ impl Listener {
         match addr {
             #[cfg(unix)]
             jgd_protocol::SocketAddr::Unix(path) => Self::bind_unix(path),
+            #[cfg(not(unix))]
+            jgd_protocol::SocketAddr::Unix(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "unix:// is only supported on Unix",
+            )),
             jgd_protocol::SocketAddr::Npipe(name) => {
                 #[cfg(windows)]
                 {

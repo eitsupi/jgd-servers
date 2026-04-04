@@ -123,7 +123,7 @@ pub fn remove(path: &Path) -> io::Result<()> {
 /// Resolve the platform-specific runtime directory for sockets.
 ///
 /// On Linux: `$XDG_RUNTIME_DIR/<name>/` (falls back to `$TMPDIR/<name>-<pid>/`)
-/// On macOS: `$TMPDIR/<name>/`
+/// On macOS: `$TMPDIR/<name>-<pid>/`
 /// On Windows: not applicable (Named Pipes have no directory)
 ///
 /// The returned directory is created with mode 0700 if it does not exist.
@@ -201,22 +201,20 @@ fn is_dir_safe(path: &Path) -> bool {
 ///
 /// On Unix: `$XDG_RUNTIME_DIR/<name>/<pid>[<suffix>].sock`
 /// On Windows: `\\.\pipe\<name>-<pid>[<suffix>]`
-pub fn default_socket_addr(name: &str, suffix: &str) -> jgd_protocol::SocketAddr {
+///
+/// Returns an error if a safe runtime directory cannot be determined on Unix.
+pub fn default_socket_addr(name: &str, suffix: &str) -> io::Result<jgd_protocol::SocketAddr> {
     let pid = std::process::id();
 
     #[cfg(unix)]
     {
-        let dir = runtime_dir(name).unwrap_or_else(|| {
-            let fallback = std::env::temp_dir().join(format!("{name}-{pid}"));
-            std::fs::create_dir_all(&fallback).ok();
-            fallback
-        });
-        let filename = if suffix.is_empty() {
-            format!("{pid}.sock")
-        } else {
-            format!("{pid}{suffix}.sock")
-        };
-        jgd_protocol::SocketAddr::Unix(dir.join(filename))
+        let dir = runtime_dir(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "cannot determine safe runtime directory for sockets",
+            )
+        })?;
+        Ok(socket_addr_in(dir, pid, suffix))
     }
     #[cfg(windows)]
     {
@@ -225,10 +223,20 @@ pub fn default_socket_addr(name: &str, suffix: &str) -> jgd_protocol::SocketAddr
         } else {
             format!(r"\\.\pipe\{name}-{pid}{suffix}")
         };
-        jgd_protocol::SocketAddr::Npipe(pipe_name)
+        Ok(jgd_protocol::SocketAddr::Npipe(pipe_name))
     }
 }
 
+/// Build a Unix socket address under a given directory.
+#[cfg(unix)]
+fn socket_addr_in(dir: PathBuf, pid: u32, suffix: &str) -> jgd_protocol::SocketAddr {
+    let filename = if suffix.is_empty() {
+        format!("{pid}.sock")
+    } else {
+        format!("{pid}{suffix}.sock")
+    };
+    jgd_protocol::SocketAddr::Unix(dir.join(filename))
+}
 
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
@@ -405,11 +413,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn socket_addr_is_pid_based() {
+        let tmp = tempfile::tempdir().unwrap();
         let pid = std::process::id();
-        let addr = default_socket_addr("testapp", "");
+        let addr = socket_addr_in(tmp.path().to_path_buf(), pid, "");
         let jgd_protocol::SocketAddr::Unix(path) = addr else {
             panic!("expected Unix socket addr");
         };
+        assert!(path.starts_with(tmp.path()));
         let name = path.file_name().unwrap().to_string_lossy();
         assert_eq!(name, format!("{pid}.sock"));
     }
@@ -417,11 +427,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn socket_addr_with_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
         let pid = std::process::id();
-        let addr = default_socket_addr("testapp", "-api");
+        let addr = socket_addr_in(tmp.path().to_path_buf(), pid, "-api");
         let jgd_protocol::SocketAddr::Unix(path) = addr else {
             panic!("expected Unix socket addr");
         };
+        assert!(path.starts_with(tmp.path()));
         let name = path.file_name().unwrap().to_string_lossy();
         assert_eq!(name, format!("{pid}-api.sock"));
     }

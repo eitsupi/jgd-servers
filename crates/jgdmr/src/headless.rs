@@ -12,7 +12,7 @@ pub async fn run(
 ) -> Result<()> {
     let socket_addr = match socket_override {
         Some(s) => SocketAddr::parse(s).map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => jgd_server::discovery::default_socket_addr("jgdmr", ""),
+        None => jgd_server::discovery::default_socket_addr("jgdmr", "")?,
     };
     let listen_addr = listen::parse_listen_uri(listen_uri)?;
 
@@ -28,15 +28,9 @@ pub async fn run(
     let server_name = "jgdmr".to_owned();
     let transport = socket_addr.transport();
     let serve_handle = tokio::spawn(async move {
-        jgd_server::serve::serve(
-            listener,
-            serve_hub,
-            server_name,
-            transport,
-            async {
-                let _ = serve_shutdown_rx.await;
-            },
-        )
+        jgd_server::serve::serve(listener, serve_hub, server_name, transport, async {
+            let _ = serve_shutdown_rx.await;
+        })
         .await;
     });
 

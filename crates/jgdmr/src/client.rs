@@ -46,15 +46,13 @@ pub fn resolve_target(target: Option<&str>) -> Result<(SocketAddr, Option<u32>)>
 }
 
 fn read_discovery() -> Result<jgd_server::discovery::DiscoveryInfo> {
-    let path = jgd_server::discovery::default_path()
-        .context("could not determine discovery file path")?;
+    let path =
+        jgd_server::discovery::default_path().context("could not determine discovery file path")?;
     jgd_server::discovery::read(&path)
         .with_context(|| format!("failed to read discovery file: {}", path.display()))
 }
 
-fn listen_addr_from_discovery(
-    info: &jgd_server::discovery::DiscoveryInfo,
-) -> Result<SocketAddr> {
+fn listen_addr_from_discovery(info: &jgd_server::discovery::DiscoveryInfo) -> Result<SocketAddr> {
     // Try listenUrl from serverInfo (headless mode).
     if let Some(si) = &info.server_info {
         if let Some(serde_json::Value::String(url)) = si.get("listenUrl") {
@@ -81,8 +79,8 @@ fn listen_addr_from_discovery(
 // ---------------------------------------------------------------------------
 
 pub fn run_list(json: bool) -> Result<()> {
-    let path = jgd_server::discovery::default_path()
-        .context("could not determine discovery file path")?;
+    let path =
+        jgd_server::discovery::default_path().context("could not determine discovery file path")?;
 
     let info = match jgd_server::discovery::read(&path) {
         Ok(info) => {
@@ -91,7 +89,10 @@ pub fn run_list(json: bool) -> Result<()> {
                 if json {
                     println!("[]");
                 } else {
-                    println!("No active sessions (stale discovery file for PID {})", info.pid);
+                    println!(
+                        "No active sessions (stale discovery file for PID {})",
+                        info.pid
+                    );
                 }
                 return Ok(());
             }
@@ -232,9 +233,8 @@ pub async fn run_api_render(
 pub fn run_api_shutdown(target: Option<&str>) -> Result<()> {
     let (_addr, pid) = resolve_target(target)?;
 
-    let pid = pid.context(
-        "shutdown requires a PID (use --target PID or ensure a discovery file exists)",
-    )?;
+    let pid = pid
+        .context("shutdown requires a PID (use --target PID or ensure a discovery file exists)")?;
 
     if !jgd_server::discovery::is_process_alive(pid) {
         bail!("process {pid} is not alive");
@@ -247,8 +247,9 @@ pub fn run_api_shutdown(target: Option<&str>) -> Result<()> {
 
 #[cfg(unix)]
 fn send_signal(pid: u32) -> Result<()> {
+    let pid_t: libc::pid_t = pid.try_into().context("PID too large for pid_t")?;
     // SIGTERM for graceful shutdown.
-    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    let ret = unsafe { libc::kill(pid_t, libc::SIGTERM) };
     if ret != 0 {
         bail!(
             "kill({pid}, SIGTERM) failed: {}",
@@ -317,14 +318,10 @@ fn parse_http_response(raw: &[u8]) -> Result<Vec<u8>> {
         .context("invalid HTTP response: no header terminator")?;
 
     let header_bytes = &raw[..header_end];
-    let header_str =
-        std::str::from_utf8(header_bytes).context("invalid UTF-8 in HTTP headers")?;
+    let header_str = std::str::from_utf8(header_bytes).context("invalid UTF-8 in HTTP headers")?;
 
     // Parse status line.
-    let status_line = header_str
-        .lines()
-        .next()
-        .context("empty HTTP response")?;
+    let status_line = header_str.lines().next().context("empty HTTP response")?;
     let status_code: u16 = status_line
         .split_whitespace()
         .nth(1)
