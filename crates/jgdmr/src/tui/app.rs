@@ -1,16 +1,26 @@
 //! TUI application state and event handling.
 
-use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use image::ImageReader;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
-use std::io::Cursor;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use image::{DynamicImage, RgbaImage};
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
+
 use jgd_protocol::ResizeMessage;
-use jgd_render::{RasterRenderer, Renderer};
+use jgd_render::RasterRenderer;
 use jgd_server::hub::{HubHandle, PlotSummary};
+
+/// Cache key for rendered plot images.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ImageCacheKey {
+    session_id: String,
+    plot_index: usize,
+    pixel_w: u32,
+    pixel_h: u32,
+}
 
 /// TUI application state.
 pub struct App {
@@ -37,6 +47,8 @@ pub struct App {
     pub should_quit: bool,
     /// Terminal size in character cells (cols, rows).
     pub terminal_size: (u16, u16),
+    /// Cache of rendered images keyed by (session, plot index, pixel size).
+    image_cache: HashMap<ImageCacheKey, DynamicImage>,
 }
 
 impl App {
@@ -56,6 +68,7 @@ impl App {
             halfblock_mode: false,
             should_quit: false,
             terminal_size,
+            image_cache: HashMap::new(),
         }
     }
 
@@ -92,6 +105,12 @@ impl App {
     pub async fn handle_frame(&mut self, session_id: Option<&str>) -> Result<()> {
         let was_empty = self.sessions.is_empty();
 
+        // Invalidate cached images for the session that received a new frame,
+        // since the latest plot may have been updated incrementally.
+        if let Some(sid) = session_id {
+            self.image_cache.retain(|k, _| k.session_id != sid);
+        }
+
         if self.following_latest {
             // Fetch summaries once and reuse.
             let summaries = self.hub.get_plots().await;
@@ -123,7 +142,8 @@ impl App {
     /// Handle terminal resize.
     pub async fn handle_resize(&mut self, width: u16, height: u16) -> Result<()> {
         self.terminal_size = (width, height);
-        // Invalidate the cached image so it gets re-rendered at the new size.
+        // Invalidate all cached images — pixel dimensions changed.
+        self.image_cache.clear();
         self.image_state = None;
         // Notify R sessions so they replay at the new dimensions.
         self.send_resize(None);
@@ -199,7 +219,13 @@ impl App {
             return Ok(());
         };
 
-        let png_bytes = self.render_plot_to_png(&plot)?;
+        let (pixel_w, pixel_h) = self.render_pixel_size();
+        let renderer = RasterRenderer {
+            output_width: Some(pixel_w),
+            output_height: Some(pixel_h),
+        };
+        let png_bytes = jgd_render::Renderer::render(&renderer, &plot)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let path = self.default_save_path();
         std::fs::write(&path, &png_bytes)?;
         self.status = Some(format!("Saved to {}", path.display()));
@@ -249,17 +275,29 @@ impl App {
         Ok(())
     }
 
-    /// Render a plot to PNG at the full terminal pixel size.
+    /// Render a plot to a [`DynamicImage`] at the full terminal pixel size.
     ///
-    /// The renderer scales from device coordinates to output pixels, so the
-    /// plot fills the entire terminal area without aspect-ratio gaps.
-    fn render_plot_to_png(&self, plot: &jgd_protocol::Plot) -> Result<Vec<u8>> {
+    /// Renders via tiny-skia and converts the premultiplied-alpha pixmap
+    /// directly to a straight-alpha `DynamicImage`, avoiding a PNG
+    /// encode/decode round-trip.
+    fn render_plot_to_image(&self, plot: &jgd_protocol::Plot) -> Result<DynamicImage> {
         let (pixel_w, pixel_h) = self.render_pixel_size();
         let renderer = RasterRenderer {
             output_width: Some(pixel_w),
             output_height: Some(pixel_h),
         };
-        renderer.render(plot).map_err(|e| anyhow::anyhow!("{e}"))
+        let pixmap = renderer
+            .render_to_pixmap(plot)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Convert premultiplied RGBA → straight RGBA for the image crate.
+        let mut rgba = Vec::with_capacity((pixmap.width() * pixmap.height() * 4) as usize);
+        for pixel in pixmap.pixels() {
+            let c = pixel.demultiply();
+            rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+        let img = RgbaImage::from_raw(pixmap.width(), pixmap.height(), rgba)
+            .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
+        Ok(DynamicImage::ImageRgba8(img))
     }
 
     /// Fetch the current plot from Hub and render it to an image for display.
@@ -298,10 +336,22 @@ impl App {
             );
         }
 
-        let png_bytes = self.render_plot_to_png(&plot)?;
-        let dyn_image = ImageReader::new(Cursor::new(png_bytes))
-            .with_guessed_format()?
-            .decode()?;
+        let (pixel_w, pixel_h) = self.render_pixel_size();
+        let cache_key = ImageCacheKey {
+            session_id: session_id.clone(),
+            plot_index: self.current_plot_index,
+            pixel_w,
+            pixel_h,
+        };
+
+        let dyn_image = if let Some(cached) = self.image_cache.get(&cache_key) {
+            cached.clone()
+        } else {
+            let img = self.render_plot_to_image(&plot)?;
+            self.image_cache.insert(cache_key, img.clone());
+            img
+        };
+
         self.image_state = Some(self.picker.new_resize_protocol(dyn_image));
         self.status = None;
         Ok(())

@@ -30,11 +30,13 @@ pub enum RasterError {
     Text(String),
 }
 
-impl Renderer for RasterRenderer {
-    type Output = Vec<u8>;
-    type Error = RasterError;
-
-    fn render(&self, plot: &Plot) -> Result<Vec<u8>, RasterError> {
+impl RasterRenderer {
+    /// Render a [`Plot`] into a tiny-skia [`Pixmap`].
+    ///
+    /// This is useful when the caller needs raw pixel data (e.g. for direct
+    /// conversion to an `image::DynamicImage`) without the PNG encode/decode
+    /// round-trip.
+    pub fn render_to_pixmap(&self, plot: &Plot) -> Result<Pixmap, RasterError> {
         let dev_w = plot.device.width;
         let dev_h = plot.device.height;
         let dpi = plot.device.dpi.unwrap_or(96.0);
@@ -278,7 +280,18 @@ impl Renderer for RasterRenderer {
             }
         }
 
-        pixmap.encode_png().map_err(|_| RasterError::PngEncode)
+        Ok(pixmap)
+    }
+}
+
+impl Renderer for RasterRenderer {
+    type Output = Vec<u8>;
+    type Error = RasterError;
+
+    fn render(&self, plot: &Plot) -> Result<Vec<u8>, RasterError> {
+        self.render_to_pixmap(plot)?
+            .encode_png()
+            .map_err(|_| RasterError::PngEncode)
     }
 }
 
