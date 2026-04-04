@@ -87,10 +87,10 @@ async fn event_loop(
 ) -> Result<()> {
     let mut prev_show_help = app.show_help;
     loop {
-        // Force a full redraw when entering the help overlay, so that
-        // terminal graphics protocol images are properly erased.
-        // On dismissal, refresh_image() in handle_key rebuilds the
-        // protocol state so no clear is needed.
+        // One-shot clear on help-entry transition: erase graphics
+        // protocol images so the text-based overlay is visible.
+        // Not needed on every help-visible frame or on dismissal
+        // (refresh_image() in handle_key rebuilds the protocol state).
         if app.show_help && !prev_show_help {
             terminal.clear()?;
         }

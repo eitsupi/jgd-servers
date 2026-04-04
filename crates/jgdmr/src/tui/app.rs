@@ -57,8 +57,7 @@ pub struct App {
 
 impl App {
     pub fn new(hub: HubHandle, picker: Picker) -> Self {
-        let terminal_size =
-            crossterm::terminal::size().unwrap_or((80, 24));
+        let terminal_size = crossterm::terminal::size().unwrap_or((80, 24));
         Self {
             hub,
             sessions: Vec::new(),
@@ -243,8 +242,8 @@ impl App {
             output_width: Some(pixel_w),
             output_height: Some(pixel_h),
         };
-        let png_bytes = jgd_render::Renderer::render(&renderer, &plot)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let png_bytes =
+            jgd_render::Renderer::render(&renderer, &plot).map_err(|e| anyhow::anyhow!("{e}"))?;
         let path = self.default_save_path();
         std::fs::write(&path, &png_bytes)?;
         self.status = Some(format!("Saved to {}", path.display()));

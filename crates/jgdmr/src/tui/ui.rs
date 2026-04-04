@@ -94,7 +94,10 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Right-aligned help hint.
     spans.push(Span::raw(" | "));
-    spans.push(Span::styled("?", Style::default().add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+        "?",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     spans.push(Span::raw(":help"));
 
     let line = Line::from(spans);
@@ -140,6 +143,10 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
             Span::styled("  Esc  ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("Quit"),
         ]),
+        Line::from(vec![
+            Span::styled("Ctrl+C ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("Quit"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             " Press any key to close ",
@@ -158,7 +165,9 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
 
     f.render_widget(Clear, popup);
     f.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center).block(block),
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
         popup,
     );
 }
