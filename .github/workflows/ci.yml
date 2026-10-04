@@ -27,7 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatin/rust-cache@v2
       - name: Install Linux font discovery and test fonts
         if: runner.os == 'Linux'
         run: |
@@ -46,7 +45,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatin/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all -- --check
       # Keep existing warnings visible without turning unrelated lint cleanup
