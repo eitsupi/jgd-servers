@@ -33,18 +33,12 @@ jobs:
           use-public-rspm: true
       - name: Install rendering fonts
         run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu-core fonts-noto-cjk
-      - name: Check out pinned R device
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install jgd from CRAN
+        uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         with:
-          repository: REditorSupport/jgd
-          ref: 3e9380dff64f8dd3e98f2d988ce8b0feed5ef5ce
-          path: .test-deps/jgd
-          persist-credentials: false
-      - name: Install jgd without optional R dependencies
-        run: |
-          mkdir -p "$RUNNER_TEMP/r-library"
-          R CMD INSTALL --library="$RUNNER_TEMP/r-library" .test-deps/jgd/r-pkg
-          echo "R_LIBS_USER=$RUNNER_TEMP/r-library" >> "$GITHUB_ENV"
+          packages: |
+            any::jgd
+          dependencies: '"hard"'
       - name: Cache Rust
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:

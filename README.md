@@ -168,14 +168,15 @@ Rust tests are synthetic; they are not captured traffic from a real R process.
 Platform-specific tests may be conditionally compiled.
 
 [Real R integration](.github/workflows/r-integration.yml) separately installs a
-pinned jgd revision on Ubuntu and runs the Deno/TypeScript test `scripts/real-r-smoke.ts`. It relays and
+CRAN release of jgd on Ubuntu using `r-lib/actions/setup-r-dependencies` and runs
+the Deno/TypeScript test `scripts/real-r-smoke.ts`. It relays and
 captures genuine R JSONL, checks incremental drawing, two-page history, Japanese
 text transport, device dimensions at 96 DPI, SVG/PNG exports, and disconnect
 cleanup. Captures, renders, and diagnostics are uploaded as CI artifacts. This
 is a smoke test, not a visual golden test or proof of Japanese font correctness.
-To run it locally on Linux, install Deno 2, R and the pinned jgd package,
-build `jgdmr`, and run `deno task test:r`. The harness uses only built-in modules,
-so it needs no JavaScript packages or dependency lockfile. `deno task check` runs
+To run it locally on Linux, install Deno 2, R and jgd from CRAN
+(`install.packages("jgd")`), build `jgdmr`, and run `deno task test:r`. The harness
+uses only built-in modules, so it needs no JavaScript packages or dependency lockfile. `deno task check` runs
 formatting, lint and type checks. Set `JGDMR_BIN` or `JGD_TEST_OUTPUT` to override
 the binary or artifact directory. Only base R and jgd are required.
 
@@ -209,4 +210,4 @@ pinact run --check --verify-comment
 ```
 
 The seven-day cooldown follows arf's dependency-update convention. These
-commands update action code, not the Deno/R versions or the pinned jgd revision.
+commands update action code, not the Deno/R versions or CRAN packages.
