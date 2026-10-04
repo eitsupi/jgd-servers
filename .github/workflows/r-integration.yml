@@ -2,7 +2,8 @@ name: Real R integration
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -19,6 +20,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Check TypeScript harness
+        run: deno task check
       - uses: dtolnay/rust-toolchain@stable
       - uses: r-lib/actions/setup-r@v2
         with:
@@ -41,7 +47,7 @@ jobs:
       - name: Build server
         run: cargo build --locked -p jgdmr
       - name: Exercise real R plots and capture wire output
-        run: python3 scripts/real-r-smoke.py
+        run: deno task test:r
       - name: Upload captures, renders and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

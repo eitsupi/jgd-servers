@@ -166,13 +166,16 @@ Rust tests are synthetic; they are not captured traffic from a real R process.
 Platform-specific tests may be conditionally compiled.
 
 [Real R integration](.github/workflows/r-integration.yml) separately installs a
-pinned jgd revision on Ubuntu and runs `scripts/real-r-smoke.py`. It relays and
+pinned jgd revision on Ubuntu and runs the Deno/TypeScript test `scripts/real-r-smoke.ts`. It relays and
 captures genuine R JSONL, checks incremental drawing, two-page history, Japanese
 text transport, device dimensions at 96 DPI, SVG/PNG exports, and disconnect
 cleanup. Captures, renders, and diagnostics are uploaded as CI artifacts. This
 is a smoke test, not a visual golden test or proof of Japanese font correctness.
-To run it locally on Linux, install R and the pinned jgd package, build `jgdmr`,
-and run `python3 scripts/real-r-smoke.py`.
+To run it locally on Linux, install Deno 2, R and the pinned jgd package,
+build `jgdmr`, and run `deno task test:r`. The harness uses only built-in modules,
+so it needs no JavaScript packages or dependency lockfile. `deno task check` runs
+formatting, lint and type checks. Set `JGDMR_BIN` or `JGD_TEST_OUTPUT` to override
+the binary or artifact directory. Only base R and jgd are required.
 
 Important remaining validation gaps:
 

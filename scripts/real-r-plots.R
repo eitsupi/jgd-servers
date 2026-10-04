@@ -1,4 +1,4 @@
-# Used by real-r-smoke.py. Only base R and jgd are required.
+# Used by real-r-smoke.ts. Only base R and jgd are required.
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 2L)
 socket <- args[[1L]]
