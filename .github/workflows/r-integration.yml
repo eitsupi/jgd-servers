@@ -1,0 +1,47 @@
+name: Real R integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-r:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install rendering fonts
+        run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu-core fonts-noto-cjk
+      - name: Check out pinned R device
+        uses: actions/checkout@v4
+        with:
+          repository: REditorSupport/jgd
+          ref: 3e9380dff64f8dd3e98f2d988ce8b0feed5ef5ce
+          path: .test-deps/jgd
+          persist-credentials: false
+      - name: Install jgd without optional R dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/r-library"
+          R CMD INSTALL --library="$RUNNER_TEMP/r-library" .test-deps/jgd/r-pkg
+          echo "R_LIBS_USER=$RUNNER_TEMP/r-library" >> "$GITHUB_ENV"
+      - name: Build server
+        run: cargo build --locked -p jgdmr
+      - name: Exercise real R plots and capture wire output
+        run: python3 scripts/real-r-smoke.py
+      - name: Upload captures, renders and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-r-capture
+          path: .test-results/r-integration
+          if-no-files-found: warn
