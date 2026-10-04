@@ -154,9 +154,11 @@ cargo test --locked --workspace --all-features
 cargo clippy --locked --workspace --all-targets --all-features
 ```
 
-[CI](.github/workflows/ci.yml) runs the locked workspace tests with default and
+[Check](.github/workflows/check.yml) runs the locked workspace tests with default and
 all features on Linux, macOS, and Windows, plus formatting and Clippy on Linux.
 Clippy warnings are reported but are not promoted to errors in this baseline.
+The jobs select stable Rust via `rust-toolchain.toml` and cache Cargo dependencies,
+following [arf](https://github.com/eitsupi/arf/blob/main/.github/workflows/check.yml).
 The workflow is a cross-platform check, not a claim that every graphics or
 transport path has end-to-end coverage.
 
@@ -188,3 +190,23 @@ Important remaining validation gaps:
 
 Do not treat successful unit tests as proof of pixel-identical output across
 operating systems or complete R graphics compatibility.
+
+### Updating GitHub Actions
+
+All external actions are pinned to full commit SHAs with version comments using
+[pinact](https://github.com/suzuki-shunsuke/pinact). With pinact 5 installed, run:
+
+```sh
+pinact run
+pinact run --check --verify-comment
+```
+
+To deliberately update action versions, review the resulting diff and rerun CI:
+
+```sh
+pinact run --update --min-age 7
+pinact run --check --verify-comment
+```
+
+The seven-day cooldown follows arf's dependency-update convention. These
+commands update action code, not the Deno/R versions or the pinned jgd revision.
