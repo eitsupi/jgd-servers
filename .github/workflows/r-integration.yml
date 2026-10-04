@@ -1,0 +1,57 @@
+name: Real R integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-r:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - name: Check TypeScript harness
+        run: deno task check
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install rendering fonts
+        run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu-core fonts-noto-cjk
+      - name: Install jgd from CRAN
+        uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          packages: |
+            any::jgd
+          dependencies: '"hard"'
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: real-r
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build server
+        run: cargo build --locked -p jgdmr
+      - name: Exercise real R plots and capture wire output
+        run: deno task test:r
+      - name: Upload captures, renders and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-r-capture
+          path: .test-results/r-integration
+          if-no-files-found: warn

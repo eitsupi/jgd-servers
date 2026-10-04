@@ -52,7 +52,7 @@ enum Command {
         ///
         /// Supported schemes:
         /// - `unix:///path/to/socket` (Unix domain socket, default on Unix)
-        /// - `npipe:////./pipe/name` (Windows Named Pipe, default on Windows)
+        /// - `tcp://127.0.0.1:0` (loopback with an assigned port, default on Windows)
         /// - `tcp://host:port`
         ///
         /// If omitted, a platform-appropriate default is generated automatically.
@@ -140,6 +140,7 @@ async fn main() -> Result<()> {
     );
     if is_server {
         tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| "info,jgd_server=debug".into()),
@@ -200,10 +201,12 @@ async fn run_http(
         None => jgd_server::discovery::default_socket_addr("jgdmr", "")?,
     };
 
+    let shutdown = headless::shutdown_signal()?;
     let hub = jgd_server::hub::spawn();
 
     // Start R connection listener.
     let listener = jgd_server::listener::Listener::bind(&socket_addr).await?;
+    let socket_addr = listener.address()?;
     tracing::info!(%socket_addr, "listening for R connections");
 
     // Start HTTP listener before writing the discovery file so that
@@ -233,10 +236,6 @@ async fn run_http(
     }
 
     let hub_clone = hub.clone();
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("shutting down");
-    };
 
     // Spawn the R connection serve loop with a shutdown channel so it
     // stops cooperatively when the HTTP server exits.
@@ -259,9 +258,9 @@ async fn run_http(
         http::api::full_router(hub_clone)
     };
 
-    axum::serve(tcp_listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    let http_result = axum::serve(tcp_listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await;
 
     // Signal the serve loop to stop and wait for it to finish.
     let _ = serve_shutdown_tx.send(());
@@ -272,7 +271,7 @@ async fn run_http(
         let _ = jgd_server::discovery::remove(path);
     }
 
-    Ok(())
+    http_result.map_err(Into::into)
 }
 
 async fn run_tui(socket_override: Option<&str>) -> Result<()> {
@@ -285,6 +284,7 @@ async fn run_tui(socket_override: Option<&str>) -> Result<()> {
 
     // Start R connection listener.
     let listener = jgd_server::listener::Listener::bind(&socket_addr).await?;
+    let socket_addr = listener.address()?;
     tracing::info!(%socket_addr, "listening for R connections");
 
     // Write discovery file so R clients can auto-connect.

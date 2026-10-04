@@ -6,5 +6,5 @@ pub mod listener;
 pub mod serve;
 pub mod session;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod testing;
