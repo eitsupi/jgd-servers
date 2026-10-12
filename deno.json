@@ -1,0 +1,6 @@
+{
+  "tasks": {
+    "check": "deno fmt --check scripts/real-r-smoke.ts deno.json && deno lint scripts/real-r-smoke.ts && deno check scripts/real-r-smoke.ts",
+    "test:r": "deno test --allow-read --allow-write --allow-env --allow-run --allow-net scripts/real-r-smoke.ts"
+  }
+}

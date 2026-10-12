@@ -16,11 +16,18 @@ pub async fn run(
     };
     let listen_addr = listen::parse_listen_uri(listen_uri)?;
 
+    let shutdown = shutdown_signal()?;
     let hub = jgd_server::hub::spawn();
 
     // Start R connection listener.
     let listener = jgd_server::listener::Listener::bind(&socket_addr).await?;
+    let socket_addr = listener.address()?;
     tracing::info!(%socket_addr, "listening for R connections");
+
+    // Bind both endpoints before starting tasks or announcing readiness.
+    let api_listener = listen::ApiListener::bind(&listen_addr).await?;
+    let listen_addr = api_listener.address()?;
+    tracing::info!(%listen_addr, "REST API listening");
 
     // Spawn the R connection serve loop with a shutdown channel.
     let (serve_shutdown_tx, serve_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -36,14 +43,6 @@ pub async fn run(
 
     // Build REST API router (headless: no WebSocket or static files).
     let app = crate::http::api::router(hub.clone());
-
-    // Prepare graceful shutdown on SIGINT or SIGTERM.
-    let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        tracing::info!("shutting down");
-        let _ = api_shutdown_tx.send(());
-    });
 
     // Write discovery file so R clients and API clients can find us.
     let discovery_path = jgd_server::discovery::default_path();
@@ -77,10 +76,7 @@ pub async fn run(
     }
 
     // Serve REST API (blocks until shutdown).
-    listen::serve(&listen_addr, app, async {
-        let _ = api_shutdown_rx.await;
-    })
-    .await?;
+    let api_result = api_listener.serve(app, shutdown).await;
 
     // Signal the R serve loop to stop and wait for it to finish.
     let _ = serve_shutdown_tx.send(());
@@ -91,23 +87,27 @@ pub async fn run(
         let _ = jgd_server::discovery::remove(path);
     }
 
-    Ok(())
+    api_result
 }
 
 /// Wait for SIGINT (ctrl-c) or SIGTERM.
-async fn shutdown_signal() {
+pub(crate) fn shutdown_signal() -> Result<impl std::future::Future<Output = ()> + Send> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
-        }
+        // Register SIGTERM before announcing readiness, not when first polled.
+        let mut sigterm = signal(SignalKind::terminate())?;
+        Ok(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        })
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await.ok();
+        Ok(async {
+            tokio::signal::ctrl_c().await.ok();
+        })
     }
 }

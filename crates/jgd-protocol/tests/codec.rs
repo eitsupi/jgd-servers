@@ -82,3 +82,34 @@ fn encode_decode_roundtrip() {
     let decoded = codec.decode(&mut buf).unwrap().unwrap();
     assert_eq!(original, decoded);
 }
+
+#[test]
+fn japanese_metrics_text_survives_fragmented_utf8_jsonl() {
+    // Synthetic protocol input, not a fixture captured from R. Split at every
+    // byte boundary, including inside Japanese UTF-8 code points.
+    let message = Message::MetricsRequest(MetricsRequest {
+        id: 7,
+        kind: MetricsKind::StrWidth,
+        str: Some("日本語の幅\n東京 🗼".into()),
+        c: None,
+        gc: GraphicsContext::default(),
+    });
+    let mut encoded = BytesMut::new();
+    JsonLinesCodec::new()
+        .encode(message.clone(), &mut encoded)
+        .unwrap();
+    assert_eq!(encoded.iter().filter(|&&byte| byte == b'\n').count(), 1);
+
+    for split in 0..encoded.len() {
+        let mut codec = JsonLinesCodec::new();
+        let mut input = BytesMut::from(&encoded[..split]);
+        assert!(codec.decode(&mut input).unwrap().is_none(), "split {split}");
+        input.extend_from_slice(&encoded[split..]);
+        assert_eq!(
+            codec.decode(&mut input).unwrap(),
+            Some(message.clone()),
+            "split {split}"
+        );
+        assert!(input.is_empty());
+    }
+}

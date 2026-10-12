@@ -5,6 +5,7 @@
 //! - Windows Named Pipes
 //! - TCP sockets (opt-in via the `tcp` feature)
 
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -87,6 +88,8 @@ pub enum Listener {
     Unix {
         inner: tokio::net::UnixListener,
         path: PathBuf,
+        device: u64,
+        inode: u64,
     },
     /// Windows Named Pipe listener.
     ///
@@ -150,27 +153,22 @@ impl Listener {
 
     /// Bind a Unix domain socket listener.
     ///
-    /// Removes a stale socket file if one exists at the given path.
+    /// Refuses existing paths, including live or stale sockets. Remove stale
+    /// sockets explicitly after checking that no server owns them.
     #[cfg(unix)]
     pub fn bind_unix(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
 
-        // Remove stale socket if it exists, but only if it is actually a socket.
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            use std::os::unix::fs::FileTypeExt as _;
-            if meta.file_type().is_socket() {
-                std::fs::remove_file(&path)?;
-            } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    format!("path exists but is not a socket: {}", path.display()),
-                ));
-            }
-        }
-
         let inner = tokio::net::UnixListener::bind(&path)?;
         tracing::info!(?path, "listening on Unix socket");
-        Ok(Listener::Unix { inner, path })
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(&path)?;
+        Ok(Listener::Unix {
+            inner,
+            path,
+            device: meta.dev(),
+            inode: meta.ino(),
+        })
     }
 
     /// Create a Named Pipe listener.
@@ -199,6 +197,22 @@ impl Listener {
         let local_addr = inner.local_addr()?;
         tracing::info!(%local_addr, "listening on TCP");
         Ok(Listener::Tcp(inner))
+    }
+
+    /// Address actually bound by this listener (resolves an ephemeral TCP port).
+    pub fn address(&self) -> std::io::Result<jgd_protocol::SocketAddr> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix { path, .. } => Ok(jgd_protocol::SocketAddr::Unix(path.clone())),
+            #[cfg(windows)]
+            Self::NamedPipe { pipe_name, .. } => {
+                Ok(jgd_protocol::SocketAddr::Npipe(pipe_name.clone()))
+            }
+            #[cfg(feature = "tcp")]
+            Self::Tcp(inner) => Ok(jgd_protocol::SocketAddr::Tcp(
+                inner.local_addr()?.to_string(),
+            )),
+        }
     }
 
     /// Accept the next incoming connection.
@@ -238,8 +252,19 @@ impl Drop for Listener {
     fn drop(&mut self) {
         match self {
             #[cfg(unix)]
-            Listener::Unix { path, .. } => {
-                if let Err(e) = std::fs::remove_file(&*path) {
+            Listener::Unix {
+                path,
+                device,
+                inode,
+                ..
+            } => {
+                use std::os::unix::fs::MetadataExt;
+                // A replacement at this path belongs to someone else.
+                if let Ok(meta) = std::fs::symlink_metadata(&*path)
+                    && meta.dev() == *device
+                    && meta.ino() == *inode
+                    && let Err(e) = std::fs::remove_file(&*path)
+                {
                     tracing::warn!(?path, %e, "failed to remove Unix socket on drop");
                 }
             }
