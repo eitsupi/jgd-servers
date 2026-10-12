@@ -18,6 +18,8 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use jgd_protocol::Plot;
+
+use crate::history::{PlotHistory, PlotId, StoredPlot};
 use jgd_protocol::message::{FrameMessage, Message, ResizeMessage};
 
 /// Connection-scoped numeric identifier for an R session.
@@ -30,6 +32,9 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 pub struct PlotSummary {
     pub session_id: String,
     pub plot_index: usize,
+    pub plot_id: PlotId,
+    pub revision: u64,
+    pub connected: bool,
     pub width: f64,
     pub height: f64,
     pub op_count: usize,
@@ -83,6 +88,15 @@ impl HubHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// Get an immutable drawing snapshot by its stable server identity.
+    pub async fn get_snapshot(&self, plot_id: PlotId) -> Option<StoredPlot> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .cmd_tx
+            .send(HubCommand::GetSnapshot { plot_id, reply: tx });
+        rx.await.ok().flatten()
+    }
+
     /// Get a stored plot by session ID and optional plot index.
     ///
     /// When `plot_index` is `None`, returns the latest plot for the session.
@@ -117,6 +131,10 @@ enum HubCommand {
     GetPlots {
         reply: oneshot::Sender<Vec<PlotSummary>>,
     },
+    GetSnapshot {
+        plot_id: PlotId,
+        reply: oneshot::Sender<Option<StoredPlot>>,
+    },
     GetPlot {
         session_id: String,
         plot_index: Option<usize>,
@@ -130,7 +148,6 @@ struct SessionState {
     last_resize_w: f64,
     last_resize_h: f64,
     last_resize_had_plot_index: bool,
-    remapped: bool,
     /// DPI from the R device (set from the first frame's DeviceInfo).
     dpi: Option<f64>,
 }
@@ -142,7 +159,7 @@ struct HubState {
     session_reuse_counter: u64,
     broadcast_tx: broadcast::Sender<Message>,
     /// Plot history per session, keyed by session_id.
-    plots: HashMap<String, Vec<Plot>>,
+    history: PlotHistory,
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +196,7 @@ async fn run(
         retired_session_ids: HashSet::new(),
         session_reuse_counter: 0,
         broadcast_tx,
-        plots: HashMap::new(),
+        history: PlotHistory::default(),
     };
 
     while let Some(cmd) = cmd_rx.recv().await {
@@ -194,7 +211,6 @@ async fn run(
                         last_resize_w: 0.0,
                         last_resize_h: 0.0,
                         last_resize_had_plot_index: false,
-                        remapped: false,
                         dpi: None,
                     },
                 );
@@ -209,33 +225,49 @@ async fn run(
                 state.handle_client_resize(msg);
             }
             HubCommand::GetPlots { reply } => {
-                let summaries = state
-                    .plots
+                let mut summaries: Vec<_> = state
+                    .history
+                    .sessions
                     .iter()
                     .flat_map(|(sid, plots)| {
-                        plots.iter().enumerate().map(|(idx, plot)| PlotSummary {
-                            session_id: sid.clone(),
-                            plot_index: idx,
-                            width: plot.device.width,
-                            height: plot.device.height,
-                            op_count: plot.ops.len(),
-                        })
+                        let connected = state.session_id_to_conn.contains_key(sid);
+                        plots
+                            .iter()
+                            .enumerate()
+                            .map(move |(idx, stored)| PlotSummary {
+                                session_id: sid.clone(),
+                                plot_index: idx,
+                                plot_id: stored.id,
+                                revision: stored.revision,
+                                connected,
+                                width: stored.plot.device.width,
+                                height: stored.plot.device.height,
+                                op_count: stored.plot.ops.len(),
+                            })
                     })
                     .collect();
+                summaries.sort_by_key(|plot| plot.plot_id);
                 let _ = reply.send(summaries);
+            }
+            HubCommand::GetSnapshot { plot_id, reply } => {
+                let result = state
+                    .history
+                    .sessions
+                    .values()
+                    .flatten()
+                    .find(|stored| stored.id == plot_id)
+                    .cloned();
+                let _ = reply.send(result);
             }
             HubCommand::GetPlot {
                 session_id,
                 plot_index,
                 reply,
             } => {
-                let result = state.plots.get(&session_id).and_then(|plots| {
-                    match plot_index {
-                        Some(idx) => plots.get(idx),
-                        None => plots.last(),
-                    }
-                    .cloned()
-                });
+                let result = state
+                    .history
+                    .get(&session_id, plot_index)
+                    .map(|stored| stored.plot.clone());
                 let _ = reply.send(result);
             }
         }
@@ -259,34 +291,21 @@ impl HubState {
 
         if let Some(id) = session.session_id {
             self.session_id_to_conn.remove(&id);
-            self.plots.remove(&id);
+            self.history.disconnect(id.clone());
             self.retired_session_ids.insert(id);
 
-            // Cap retired set to prevent unbounded growth.  Evict an
-            // arbitrary half (HashSet has no defined order) rather than
-            // clearing entirely.  Some recently-retired IDs may be
-            // evicted, but the window for missed reuse detection is
-            // narrow and the consequence is only a cosmetic session-ID
-            // overlap on the browser side.
-            if self.retired_session_ids.len() > 1000 {
-                let retain_count = self.retired_session_ids.len() / 2;
-                let to_remove: Vec<_> = self
-                    .retired_session_ids
-                    .iter()
-                    .skip(retain_count)
-                    .cloned()
-                    .collect();
-                for id in to_remove {
-                    self.retired_session_ids.remove(&id);
-                }
-            }
+            // Keep identity tombstones for this process lifetime: even after a
+            // drawing is evicted, a stale client target must never route to a
+            // different R connection.
         }
+        // Legacy notification has no session ID; clients resynchronize summaries.
+        let _ = self.broadcast_tx.send(Message::Close);
     }
 
     /// Assign a session ID to a connection, handling reuse detection.
     ///
-    /// R session IDs are PID-based (e.g. `r-12345-1`) and can be reused
-    /// when a process reopens a device. The Hub detects this and appends
+    /// R session IDs are opaque strings and can be reused when a process
+    /// reopens a device. The Hub detects this and appends
     /// a disambiguation suffix (e.g. `r-12345-1:2`).
     fn update_session_id(&mut self, conn_id: ConnId, raw_id: String) {
         let Some(session) = self.sessions.get_mut(&conn_id) else {
@@ -300,10 +319,18 @@ impl HubState {
 
         let final_id = if self.retired_session_ids.contains(&raw_id)
             || self.session_id_to_conn.contains_key(&raw_id)
+            || self.history.sessions.contains_key(&raw_id)
         {
-            self.session_reuse_counter += 1;
-            session.remapped = true;
-            format!("{}:{}", raw_id, self.session_reuse_counter)
+            loop {
+                self.session_reuse_counter += 1;
+                let candidate = format!("{}:{}", raw_id, self.session_reuse_counter);
+                if !self.session_id_to_conn.contains_key(&candidate)
+                    && !self.history.sessions.contains_key(&candidate)
+                    && !self.retired_session_ids.contains(&candidate)
+                {
+                    break candidate;
+                }
+            }
         } else {
             raw_id
         };
@@ -315,6 +342,9 @@ impl HubState {
 
     /// Route a message from an R session.
     fn handle_r_message(&mut self, conn_id: ConnId, msg: Message) {
+        if !self.sessions.contains_key(&conn_id) {
+            return;
+        }
         match msg {
             Message::Frame(frame) => self.handle_frame(conn_id, frame),
             Message::MetricsRequest(req) => {
@@ -331,7 +361,7 @@ impl HubState {
                 }
             }
             Message::Close => {
-                let _ = self.broadcast_tx.send(Message::Close);
+                self.unregister_session(conn_id);
             }
             other => {
                 // Forward unrecognized messages to browser clients.
@@ -357,56 +387,39 @@ impl HubState {
         // Inject or replace session ID in outgoing frame.
         if let Some(session) = self.sessions.get(&conn_id)
             && let Some(ref session_id) = session.session_id
-            && (session.remapped || frame.plot.session_id.is_none())
         {
             frame.plot.session_id = Some(session_id.clone());
         }
 
-        // Store the plot in history for REST API access.
-        if let Some(ref sid) = frame.plot.session_id {
-            let plots = self.plots.entry(sid.clone()).or_default();
-
-            let plot_idx = if plots.is_empty() || frame.new_page == Some(true) {
-                // New plot page — append to history.
-                plots.push(frame.plot.clone());
-                plots.len() - 1
-            } else if let Some(idx) = frame.plot_index.map(|i| i as usize) {
-                // Targeted update (e.g. resize replay) — update specific entry.
-                if let Some(p) = plots.get_mut(idx) {
-                    *p = frame.plot.clone();
-                    idx
-                } else {
-                    tracing::warn!(
-                        session_id = sid.as_str(),
-                        idx,
-                        len = plots.len(),
-                        "plot_index out of bounds, updating last"
-                    );
-                    let last = plots.len() - 1;
-                    plots[last] = frame.plot.clone();
-                    last
-                }
-            } else if frame.incremental {
-                // Incremental update — append new ops to the latest entry.
-                let last = plots.len() - 1;
-                plots[last].ops.extend(frame.plot.ops.iter().cloned());
-                plots[last].device = frame.plot.device.clone();
-                last
-            } else {
-                // Complete (non-incremental) update — replace the latest entry.
-                let last = plots.len() - 1;
-                plots[last] = frame.plot.clone();
-                last
-            };
-
-            frame.plot_index = Some(plot_idx as u32);
-        }
+        // Only a registered connection's assigned identity may own retained data.
+        let Some(sid) = frame.plot.session_id.as_deref() else {
+            return;
+        };
+        let Some(plot_idx) = self.history.apply(sid, &frame) else {
+            tracing::warn!(
+                sid,
+                "ignoring frame with unknown or conflicting plot identity"
+            );
+            return;
+        };
+        // The renderer-facing v1 adapter keeps its local array index.
+        frame.plot_index = Some(plot_idx as u32);
 
         let _ = self.broadcast_tx.send(Message::Frame(frame));
     }
 
     /// Route a resize from a browser client to R session(s).
     fn handle_client_resize(&mut self, msg: ResizeMessage) {
+        if !msg.width.is_finite()
+            || !msg.height.is_finite()
+            || msg.width <= 0.0
+            || msg.height <= 0.0
+            || msg.width > 10000.0
+            || msg.height > 10000.0
+        {
+            return;
+        }
+
         // plotIndex resize: route only to the owning session.
         if let Some(plot_index) = msg.plot_index {
             let Some(session_id) = &msg.session_id else {
@@ -414,6 +427,13 @@ impl HubState {
             };
             let Some(&conn_id) = self.session_id_to_conn.get(session_id) else {
                 return; // Target session is dead.
+            };
+            let Some(replay_number) = self
+                .history
+                .get(session_id, Some(plot_index as usize))
+                .and_then(|plot| plot.replay_number)
+            else {
+                return;
             };
             let Some(session) = self.sessions.get_mut(&conn_id) else {
                 return;
@@ -426,7 +446,7 @@ impl HubState {
             let _ = session.tx.send(Message::Resize(ResizeMessage {
                 width: msg.width,
                 height: msg.height,
-                plot_index: Some(plot_index),
+                plot_index: Some(replay_number),
                 session_id: None, // R doesn't need the session ID.
             }));
             return;
@@ -434,6 +454,11 @@ impl HubState {
 
         // Normal resize: broadcast to all sessions with per-session dedup.
         for session in self.sessions.values_mut() {
+            if let Some(target) = &msg.session_id
+                && session.session_id.as_ref() != Some(target)
+            {
+                continue;
+            }
             // Dedup: skip if same dimensions AND the previous resize was
             // NOT a plotIndex resize. After a plotIndex resize, one normal
             // resize at the same dimensions must pass through (it targets
@@ -555,7 +580,7 @@ mod tests {
 
         // Session 1 disconnects.
         hub.unregister_session(conn1);
-        tokio::task::yield_now().await;
+        assert_eq!(sub.recv().await.unwrap(), Message::Close);
 
         // Session 2 reuses the same R session ID.
         let (conn2, _rx2) = hub.register_session();
@@ -632,7 +657,9 @@ mod tests {
         let mut sub = hub.subscribe();
 
         // Assign session ID via frame.
-        hub.r_message(conn, Message::Frame(make_frame(Some("r-400-1"))));
+        let mut frame = make_frame(Some("r-400-1"));
+        frame.plot_number = Some(17);
+        hub.r_message(conn, Message::Frame(frame));
         let _ = sub.recv().await.unwrap();
 
         // plotIndex resize at 800x600.
@@ -666,14 +693,16 @@ mod tests {
         let mut sub = hub.subscribe();
 
         // Assign session ID to conn1.
-        hub.r_message(conn1, Message::Frame(make_frame(Some("r-500-1"))));
+        let mut frame = make_frame(Some("r-500-1"));
+        frame.plot_number = Some(17);
+        hub.r_message(conn1, Message::Frame(frame));
         let _ = sub.recv().await.unwrap();
 
         // plotIndex resize targeting conn1's session.
         hub.client_resize(ResizeMessage {
             width: 640.0,
             height: 480.0,
-            plot_index: Some(2),
+            plot_index: Some(0),
             session_id: Some("r-500-1".into()),
         });
 
@@ -681,7 +710,7 @@ mod tests {
         let msg = rx1.recv().await.unwrap();
         match msg {
             Message::Resize(r) => {
-                assert_eq!(r.plot_index, Some(2));
+                assert_eq!(r.plot_index, Some(17));
                 assert!(r.session_id.is_none()); // Stripped for R.
             }
             other => panic!("expected Resize, got {other:?}"),
@@ -904,5 +933,221 @@ mod tests {
             1,
             "non-incremental frame should replace ops"
         );
+    }
+
+    #[tokio::test]
+    async fn close_and_eof_retain_history_and_disable_routing() {
+        for graceful in [false, true] {
+            let hub = spawn();
+            let (conn, mut rx) = hub.register_session();
+            let mut frame = make_frame(Some("offline"));
+            frame.plot_number = Some(12);
+            hub.r_message(conn, Message::Frame(frame));
+            let before = hub.get_plots().await;
+            assert!(before[0].connected);
+            if graceful {
+                hub.r_message(conn, Message::Close);
+            } else {
+                hub.unregister_session(conn);
+            }
+            hub.unregister_session(conn); // Idempotent after Close or EOF.
+            let after = hub.get_plots().await;
+            assert_eq!(after.len(), 1);
+            assert!(!after[0].connected);
+            assert_eq!(after[0].plot_id, before[0].plot_id);
+            assert_eq!(after[0].revision, before[0].revision);
+            assert!(hub.get_plot("offline", Some(0)).await.is_some());
+            let snapshot = hub.get_snapshot(before[0].plot_id).await.unwrap();
+            assert_eq!(snapshot.id, before[0].plot_id);
+            assert_eq!(snapshot.revision, before[0].revision);
+            hub.client_resize(ResizeMessage {
+                width: 640.0,
+                height: 480.0,
+                plot_index: Some(0),
+                session_id: Some("offline".into()),
+            });
+            hub.r_message(conn, Message::Frame(make_frame(Some("offline"))));
+            let unchanged = hub.get_plots().await;
+            assert_eq!(unchanged[0].revision, before[0].revision);
+            assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected));
+        }
+    }
+
+    #[tokio::test]
+    async fn assigned_identity_cannot_be_changed_by_later_frames() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        hub.r_message(conn, Message::Frame(make_frame(Some("owner"))));
+        hub.r_message(conn, Message::Frame(make_frame(Some("other"))));
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), 1);
+        assert_eq!(plots[0].session_id, "owner");
+        assert_eq!(plots[0].revision, 2);
+        assert!(hub.get_plot("other", None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn targeted_normal_resize_does_not_broadcast_or_fall_back() {
+        let hub = spawn();
+        let (one, mut rx_one) = hub.register_session();
+        let (two, mut rx_two) = hub.register_session();
+        hub.r_message(one, Message::Frame(make_frame(Some("one"))));
+        hub.r_message(two, Message::Frame(make_frame(Some("two"))));
+        hub.client_resize(ResizeMessage {
+            width: 640.0,
+            height: 480.0,
+            plot_index: None,
+            session_id: Some("one".into()),
+        });
+        let _ = hub.get_plots().await;
+        assert!(matches!(rx_one.try_recv(), Ok(Message::Resize(_))));
+        assert_eq!(rx_two.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        hub.client_resize(ResizeMessage {
+            width: 700.0,
+            height: 500.0,
+            plot_index: None,
+            session_id: Some("missing".into()),
+        });
+        let _ = hub.get_plots().await;
+        assert_eq!(rx_one.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert_eq!(rx_two.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn targeted_resize_routes_zero_replay_number() {
+        let hub = spawn();
+        let (conn, mut rx) = hub.register_session();
+        hub.r_message(conn, Message::Frame(make_frame(Some("s"))));
+        let mut frame = make_frame_opts(Some("s"), Some(true), None);
+        frame.plot_number = Some(0);
+        hub.r_message(conn, Message::Frame(frame));
+        hub.client_resize(ResizeMessage {
+            width: 640.0,
+            height: 480.0,
+            plot_index: Some(1),
+            session_id: Some("s".into()),
+        });
+        let _ = hub.get_plots().await;
+        let Message::Resize(resize) = rx.try_recv().unwrap() else {
+            panic!("expected targeted resize");
+        };
+        assert_eq!(resize.plot_index, Some(0));
+        assert_eq!(resize.session_id, None);
+        assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn invalid_resize_and_unknown_history_targets_are_ignored() {
+        let hub = spawn();
+        let (conn, mut rx) = hub.register_session();
+        hub.r_message(conn, Message::Frame(make_frame(Some("s"))));
+        for (width, height) in [(0.0, 100.0), (100.0, f64::NAN), (10001.0, 100.0)] {
+            hub.client_resize(ResizeMessage {
+                width,
+                height,
+                plot_index: None,
+                session_id: None,
+            });
+        }
+        // Neither a missing replay number nor an out-of-range local index is safe.
+        for index in [0, 99] {
+            hub.client_resize(ResizeMessage {
+                width: 640.0,
+                height: 480.0,
+                plot_index: Some(index),
+                session_id: Some("s".into()),
+            });
+        }
+        let _ = hub.get_plots().await;
+        assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn reused_identity_cannot_route_old_history_to_new_connection() {
+        let hub = spawn();
+        let (old, _old_rx) = hub.register_session();
+        let mut frame = make_frame(Some("same"));
+        frame.plot_number = Some(0);
+        hub.r_message(old, Message::Frame(frame.clone()));
+        hub.unregister_session(old);
+        let (new, mut new_rx) = hub.register_session();
+        hub.r_message(new, Message::Frame(frame));
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), 2);
+        assert_eq!(plots[0].session_id, "same");
+        assert!(!plots[0].connected);
+        assert!(plots[1].connected);
+        assert_ne!(plots[0].session_id, plots[1].session_id);
+        assert!(plots[0].plot_id < plots[1].plot_id);
+        hub.client_resize(ResizeMessage {
+            width: 640.0,
+            height: 480.0,
+            plot_index: Some(0),
+            session_id: Some("same".into()),
+        });
+        let _ = hub.get_plots().await;
+        assert_eq!(new_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn historical_replay_broadcast_uses_local_index_and_keeps_current_plot() {
+        let hub = spawn();
+        let (conn, _rx) = hub.register_session();
+        let mut sub = hub.subscribe();
+        for number in [17, 23] {
+            let mut frame = make_frame_opts(Some("s"), Some(true), None);
+            frame.plot_number = Some(number);
+            hub.r_message(conn, Message::Frame(frame));
+            let _ = sub.recv().await.unwrap();
+        }
+        let before = hub.get_plots().await;
+        let mut replay = make_frame_opts(Some("s"), None, Some(17));
+        replay.resize_replay = Some(true);
+        replay.plot.device.width = 400.0;
+        hub.r_message(conn, Message::Frame(replay));
+        let Message::Frame(frame) = sub.recv().await.unwrap() else {
+            panic!("expected replay frame");
+        };
+        assert_eq!(frame.plot_index, Some(0));
+        let after = hub.get_plots().await;
+        assert_eq!(after[0].plot_id, before[0].plot_id);
+        assert_eq!(after[0].revision, before[0].revision + 1);
+        assert_eq!(after[0].width, 400.0);
+        assert_eq!(after[1].revision, before[1].revision);
+        assert_eq!(after[1].width, 800.0);
+        assert_eq!(hub.get_plot("s", None).await.unwrap().device.width, 800.0);
+    }
+
+    #[tokio::test]
+    async fn evicted_history_does_not_allow_old_session_alias_reuse() {
+        let hub = spawn();
+        for index in 0..1002 {
+            let (conn, _rx) = hub.register_session();
+            let sid = format!("session-{index}");
+            hub.r_message(conn, Message::Frame(make_frame(Some(&sid))));
+            hub.unregister_session(conn);
+        }
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), crate::history::MAX_OFFLINE_PLOTS);
+        assert!(hub.get_plot("session-0", None).await.is_none());
+        let (conn, _rx) = hub.register_session();
+        hub.r_message(conn, Message::Frame(make_frame(Some("session-0"))));
+        let plots = hub.get_plots().await;
+        let live = plots.iter().find(|plot| plot.connected).unwrap();
+        assert_ne!(live.session_id, "session-0");
+        assert!(live.session_id.starts_with("session-0:"));
+    }
+
+    #[tokio::test]
+    async fn generated_alias_does_not_collide_with_an_opaque_raw_id() {
+        let hub = spawn();
+        for sid in ["s", "s:1", "s"] {
+            let (conn, _rx) = hub.register_session();
+            hub.r_message(conn, Message::Frame(make_frame(Some(sid))));
+        }
+        let plots = hub.get_plots().await;
+        assert_eq!(plots.len(), 3);
+        let names: HashSet<_> = plots.iter().map(|plot| &plot.session_id).collect();
+        assert_eq!(names.len(), 3);
     }
 }

@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 interface Plot {
   session_id: string;
   plot_index: number;
+  plot_id: number;
+  revision: number;
+  connected: boolean;
   op_count: number;
   width: number;
   height: number;
@@ -263,6 +266,7 @@ Deno.test("real R: captured deltas, two pages, CJK, SVG/PNG and disconnect", asy
       `${output}/r.log`,
     );
     children.push(r);
+    let lastSnapshot: Plot[] = [];
     for (
       const [checkpoint, pageCount] of [["first", 1], ["second", 2]] as const
     ) {
@@ -303,6 +307,20 @@ Deno.test("real R: captured deltas, two pages, CJK, SVG/PNG and disconnect", asy
         pageCount,
         "Unexpected or duplicated pages",
       );
+      assert.equal(
+        new Set(snapshot.map((plot) => plot.plot_id)).size,
+        pageCount,
+      );
+      for (const plot of snapshot) {
+        assert(Number.isSafeInteger(plot.plot_id) && plot.plot_id > 0);
+        assert(Number.isSafeInteger(plot.revision) && plot.revision > 0);
+        assert.equal(plot.connected, true);
+      }
+      if (lastSnapshot.length > 0) {
+        assert.equal(snapshot[0].plot_id, lastSnapshot[0].plot_id);
+        assert.equal(snapshot[0].revision, lastSnapshot[0].revision);
+      }
+      lastSnapshot = snapshot;
       await Deno.writeTextFile(
         `${output}/${checkpoint}-plots.json`,
         JSON.stringify(snapshot, null, 2) + "\n",
@@ -364,12 +382,41 @@ Deno.test("real R: captured deltas, two pages, CJK, SVG/PNG and disconnect", asy
       frames.some((frame) => frame.plot?.ops.some((op) => op.str === "日本語")),
       "Missing CJK text",
     );
-    // PR1 documents current behavior; offline history retention is a later change.
-    await eventually(
-      async () => (await plots()).length === 0,
+    const retained = await eventually(
+      async () => {
+        const current = await plots();
+        return current.length === 2 && current.every((plot) => !plot.connected)
+          ? current
+          : undefined;
+      },
       [server],
-      "disconnect cleanup",
+      "disconnected history retention",
     );
+    assert.deepEqual(
+      retained,
+      lastSnapshot.map((plot) => ({ ...plot, connected: false })),
+      "Disconnect must preserve plot identities, revisions and operations",
+    );
+    await Deno.writeTextFile(
+      `${output}/disconnected-plots.json`,
+      JSON.stringify(retained, null, 2) + "\n",
+    );
+    for (const plot of retained) {
+      const sid = encodeURIComponent(plot.session_id);
+      for (const format of ["svg", "png"]) {
+        const bytes = await request(
+          `/plots/${sid}/${format}?plot_index=${plot.plot_index}`,
+        );
+        const before = await Deno.readFile(
+          `${output}/second-${plot.plot_index}.${format}`,
+        );
+        assert.deepEqual(bytes, before, `Disconnected ${format} changed`);
+        await Deno.writeFile(
+          `${output}/disconnected-${plot.plot_index}.${format}`,
+          bytes,
+        );
+      }
+    }
     console.log(
       `Real R smoke passed; ${messages.length} captured messages in ${output}`,
     );

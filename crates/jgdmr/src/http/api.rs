@@ -284,4 +284,33 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn disconnected_plots_remain_listable_and_exportable() {
+        let hub = hub::spawn();
+        let (conn, _rx) = hub.register_session();
+        hub.r_message(conn, make_frame("offline"));
+        let before = hub.get_plots().await;
+        hub.unregister_session(conn);
+        let after = hub.get_plots().await;
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].plot_id, before[0].plot_id);
+        assert!(!after[0].connected);
+        let app = router(hub);
+        for path in [
+            "/plots/offline/svg?plot_index=0",
+            "/plots/offline/png?plot_index=0",
+        ] {
+            let response = get(app.clone(), path).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response = get(app, "/plots").await;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let plots: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(plots[0]["connected"], false);
+        assert_eq!(plots[0]["plot_id"], before[0].plot_id);
+        assert_eq!(plots[0]["revision"], before[0].revision);
+    }
 }

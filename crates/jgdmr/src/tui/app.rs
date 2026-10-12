@@ -18,6 +18,8 @@ use jgd_server::hub::{HubHandle, PlotSummary};
 struct ImageCacheKey {
     session_id: String,
     plot_index: usize,
+    plot_id: u64,
+    revision: u64,
     pixel_w: u32,
     pixel_h: u32,
 }
@@ -25,7 +27,8 @@ struct ImageCacheKey {
 /// TUI application state.
 pub struct App {
     pub hub: HubHandle,
-    /// Known session IDs in insertion order.
+    summaries: Vec<PlotSummary>,
+    /// Known session IDs in first-plot creation order.
     pub sessions: Vec<String>,
     /// Index into `sessions` for the currently viewed session.
     pub active_session_idx: usize,
@@ -49,9 +52,9 @@ pub struct App {
     pub show_help: bool,
     /// Terminal size in character cells (cols, rows).
     pub terminal_size: (u16, u16),
-    /// Cache of rendered images keyed by (session, plot index, pixel size).
-    /// Unbounded; typical usage stays small (one entry per viewed plot at the
-    /// current terminal size, cleared on resize and new-frame events).
+    /// Cache of rendered images keyed by plot identity, revision and pixel size.
+    /// Stale revisions and evicted plots are removed during snapshot refresh;
+    /// live history can still grow without a fixed bound.
     image_cache: HashMap<ImageCacheKey, DynamicImage>,
 }
 
@@ -61,6 +64,7 @@ impl App {
         Self {
             hub,
             sessions: Vec::new(),
+            summaries: Vec::new(),
             active_session_idx: 0,
             current_plot_index: 0,
             plot_count: 0,
@@ -122,20 +126,10 @@ impl App {
     pub async fn handle_frame(&mut self, session_id: Option<&str>) -> Result<()> {
         let was_empty = self.sessions.is_empty();
 
-        // Invalidate cached images for the session that received a new frame,
-        // since the latest plot may have been updated incrementally.
-        match session_id {
-            Some(sid) => self.image_cache.retain(|k, _| k.session_id != sid),
-            None => self.image_cache.clear(),
-        }
+        let summaries = self.hub.get_plots().await;
+        self.update_from_summaries(&summaries);
 
         if self.following_latest {
-            // Fetch summaries once and reuse.
-            let summaries = self.hub.get_plots().await;
-            self.update_from_summaries(&summaries);
-
-            // Switch to the session that received the frame, then
-            // recalculate plot_count for the new active session.
             if let Some(sid) = session_id
                 && let Some(idx) = self.sessions.iter().position(|s| s == sid)
             {
@@ -143,8 +137,10 @@ impl App {
                 self.update_from_summaries(&summaries);
             }
             self.current_plot_index = self.plot_count.saturating_sub(1);
-            self.refresh_image().await?;
-        } else {
+        }
+        // A replay can update the selected historical plot as well as the latest.
+        self.refresh_image().await?;
+        if !self.following_latest {
             self.status = Some("New plot available".into());
         }
 
@@ -264,7 +260,8 @@ impl App {
     }
 
     fn update_from_summaries(&mut self, summaries: &[PlotSummary]) {
-        // Rebuild session list preserving order of first appearance.
+        let selected = self.active_session_id().map(String::from);
+        // Hub summaries are sorted by stable plot ID, not HashMap iteration.
         let mut new_sessions: Vec<String> = Vec::new();
         for s in summaries {
             if !new_sessions.contains(&s.session_id) {
@@ -272,6 +269,18 @@ impl App {
             }
         }
         self.sessions = new_sessions;
+        self.summaries = summaries.to_vec();
+        self.image_cache.retain(|key, _| {
+            summaries
+                .iter()
+                .any(|plot| plot.plot_id == key.plot_id && plot.revision == key.revision)
+        });
+        if let Some(index) = selected
+            .as_ref()
+            .and_then(|sid| self.sessions.iter().position(|session| session == sid))
+        {
+            self.active_session_idx = index;
+        }
 
         // Clamp active session index.
         if self.active_session_idx >= self.sessions.len() && !self.sessions.is_empty() {
@@ -285,9 +294,13 @@ impl App {
             self.plot_count = 0;
         }
 
-        // Clamp plot index.
-        if self.plot_count > 0 && self.current_plot_index >= self.plot_count {
-            self.current_plot_index = self.plot_count - 1;
+        // Clamp plot index, including complete history eviction.
+        if self.current_plot_index >= self.plot_count {
+            self.current_plot_index = self.plot_count.saturating_sub(1);
+        }
+        if self.sessions.is_empty() {
+            self.active_session_idx = 0;
+            self.image_state = None;
         }
     }
 
@@ -332,14 +345,22 @@ impl App {
         };
         let session_id = session_id.to_owned();
 
-        let plot = self
-            .hub
-            .get_plot(&session_id, Some(self.current_plot_index))
-            .await;
-        let Some(plot) = plot else {
+        let Some(plot_id) = self
+            .summaries
+            .iter()
+            .find(|summary| {
+                summary.session_id == session_id && summary.plot_index == self.current_plot_index
+            })
+            .map(|summary| summary.plot_id)
+        else {
             self.image_state = None;
             return Ok(());
         };
+        let Some(snapshot) = self.hub.get_snapshot(plot_id).await else {
+            self.image_state = None;
+            return Ok(());
+        };
+        let plot = snapshot.plot;
 
         // Write debug dimensions to a file (tracing goes to stderr which
         // conflicts with the TUI's alternate screen).
@@ -364,6 +385,8 @@ impl App {
         let cache_key = ImageCacheKey {
             session_id: session_id.clone(),
             plot_index: self.current_plot_index,
+            plot_id: snapshot.id,
+            revision: snapshot.revision,
             pixel_w,
             pixel_h,
         };
@@ -442,6 +465,11 @@ impl App {
     /// Send a targeted resize for the currently viewed plot so R replays that
     /// specific historical plot at the current terminal dimensions.
     fn send_targeted_resize(&self) {
+        if !self.summaries.iter().any(|plot| {
+            Some(plot.session_id.as_str()) == self.active_session_id() && plot.connected
+        }) {
+            return;
+        }
         let Some(session_id) = self.active_session_id().map(String::from) else {
             return;
         };
@@ -476,6 +504,9 @@ mod tests {
                 out.push(PlotSummary {
                     session_id: sid.to_string(),
                     plot_index: i,
+                    plot_id: out.len() as u64 + 1,
+                    revision: 1,
+                    connected: true,
                     width: 640.0,
                     height: 480.0,
                     op_count: 0,
@@ -527,6 +558,47 @@ mod tests {
 
         assert_eq!(app.active_session_idx, 0);
         assert_eq!(app.current_plot_index, 2); // clamped to last
+    }
+
+    #[tokio::test]
+    async fn selection_survives_earlier_session_eviction() {
+        let hub = jgd_server::hub::spawn();
+        let mut app = App::new(hub, Picker::halfblocks());
+        let summaries = make_summaries(&[("r-1", 1), ("r-2", 2), ("r-3", 1)]);
+        app.update_from_summaries(&summaries);
+        app.active_session_idx = 1;
+        app.current_plot_index = 1;
+        app.update_from_summaries(&summaries[1..]);
+        assert_eq!(app.active_session_id(), Some("r-2"));
+        assert_eq!(app.current_plot_index, 1);
+        app.update_from_summaries(&[]);
+        assert_eq!(app.active_session_idx, 0);
+        assert_eq!(app.current_plot_index, 0);
+        assert_eq!(app.plot_count, 0);
+    }
+
+    #[tokio::test]
+    async fn revisions_invalidate_cached_images() {
+        let hub = jgd_server::hub::spawn();
+        let mut app = App::new(hub, Picker::halfblocks());
+        let mut summaries = make_summaries(&[("r-1", 1)]);
+        app.update_from_summaries(&summaries);
+        app.image_cache.insert(
+            ImageCacheKey {
+                session_id: "r-1".into(),
+                plot_index: 0,
+                plot_id: summaries[0].plot_id,
+                revision: summaries[0].revision,
+                pixel_w: 1,
+                pixel_h: 1,
+            },
+            DynamicImage::new_rgba8(1, 1),
+        );
+        app.update_from_summaries(&summaries);
+        assert_eq!(app.image_cache.len(), 1);
+        summaries[0].revision += 1;
+        app.update_from_summaries(&summaries);
+        assert!(app.image_cache.is_empty());
     }
 
     #[tokio::test]
