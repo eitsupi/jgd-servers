@@ -19,6 +19,33 @@ HTTP PNG exports and the TUI use the same raster implementation. SVG output is
 serialized separately; its text can be rendered with different fonts by the
 viewing application. A native GUI and a separate GPU renderer are not implemented.
 
+## Shared plot state
+
+The Hub owns plot identity, content revisions, ordering and connection state.
+Summaries are sorted by monotonically allocated server-local plot IDs. Legacy
+session IDs and local plot indexes remain the render-addressing API; R's absolute
+`plotNumber` is tracked separately for replay requests. An unmapped historical
+plot cannot be safely replayed. The JSONL wire protocol remains version 1.
+
+R may independently discard its recorded historical snapshots. A known
+`plotNumber` therefore does not guarantee historical reflow: R can replay its
+current plot instead, and the returned `plotNumber` routes that update to the
+current plot while retained historical drawing stays intact.
+
+Close and EOF both retain completed history and notify viewers to refresh their
+snapshot. Repeated disconnect handling is idempotent. Disconnected sessions are
+evicted oldest-first as whole sessions when their combined plot count exceeds
+256; live histories are excluded. Retired session identifiers stay reserved for
+the server process so stale viewer requests cannot target a new R connection.
+This identity metadata grows with connections. The retention limit bounds
+disconnected plot count, not memory bytes, live history or metadata, and does not
+provide persistence. Live-history limits, render worker isolation,
+bounded command queues and coordinated shutdown remain future work.
+
+Browser events invalidate a coalesced REST snapshot rather than reconstructing
+history from frame counts. Stable IDs preserve selection and revisions invalidate
+image URLs. The TUI consumes the same ordered summaries and revision metadata.
+
 ## Build setup
 
 Install a current stable Rust toolchain with Cargo and the platform's native
@@ -78,7 +105,7 @@ CRAN release of jgd on Ubuntu using `r-lib/actions/setup-r-dependencies` and run
 the Deno/TypeScript test [scripts/real-r-smoke.ts](scripts/real-r-smoke.ts). It relays and
 captures genuine R JSONL, checks incremental drawing, two-page history, Japanese
 text transport, device dimensions at 96 DPI, SVG/PNG exports, and disconnect
-cleanup. Captures, renders, and diagnostics are uploaded as CI artifacts. This
+history retention with unchanged SVG/PNG exports. Captures, renders, and diagnostics are uploaded as CI artifacts. This
 is a smoke test, not a visual golden test or proof of Japanese font correctness.
 To run it locally on Linux, install Deno 2, R and jgd from CRAN
 (`install.packages("jgd")`), then build the debug binary expected by the harness:
@@ -88,6 +115,9 @@ cargo build --locked -p jgdmr
 deno task check
 deno task test:r
 ```
+
+The browser snapshot regression tests use a mocked DOM/WebSocket environment
+and run as part of `deno task check`; they do not replace interactive visual QA.
 
 The harness uses only built-in modules, so it needs no JavaScript packages or
 dependency lockfile. `deno task check` runs formatting, lint and type checks.

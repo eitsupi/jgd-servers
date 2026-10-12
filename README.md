@@ -90,6 +90,24 @@ without discovery. The REST routes are `GET /plots`, `GET /plots/{id}/svg`, and
 `GET /plots/{id}/png`; render routes accept `width`, `height`, and `plot_index`
 query parameters. The browser mode additionally exposes a WebSocket endpoint.
 
+### Plot history and disconnected sessions
+
+Plots remain available in the browser, REST exports, and TUI after the R device
+closes or disconnects. History is held in server memory and is lost when the
+server stops. Disconnected history is limited to 256 plots: the oldest
+disconnected sessions are evicted as whole sessions until within that limit.
+A disconnected session with more than 256 plots therefore cannot be retained.
+Live sessions are not subject to this disconnected-history limit.
+
+`GET /plots` returns plots in creation order with stable server-local `plot_id`,
+a `revision` that changes when plot content is updated, and `connected` status,
+alongside the existing session and plot-index fields. IDs last only for the
+server process. The browser refreshes its history on reconnection and retains
+its selected plot when possible. Disconnected plots can still be exported at
+different output sizes, but R cannot replay them to change their layout.
+While connected, historical reflow also depends on R retaining its own recorded
+snapshot.
+
 ### Optional R transport over TCP
 
 R-side TCP transport is disabled by default. Build or run with the server crate's

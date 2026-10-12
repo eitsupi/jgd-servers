@@ -113,6 +113,10 @@ async fn event_loop(
                         let session_id = frame.plot.session_id.as_deref();
                         app.handle_frame(session_id).await?;
                     }
+                    Ok(Message::Close) => {
+                        app.refresh_sessions().await?;
+                        app.refresh_image().await?;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("TUI broadcast receiver lagged by {n} messages, refreshing");
